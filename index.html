@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Alfred — GoodGuys</title>
+    <script type="module" src="/src/main.ts" defer></script>
+  </head>
+  <body>
+    <div id="app">
+      <header class="top">
+        <div class="brand">
+          <div class="mark" aria-hidden="true">A</div>
+          <div class="brand-copy">
+            <h1>Alfred</h1>
+            <p>GoodGuys raid assistant</p>
+          </div>
+        </div>
+        <nav class="tabs" role="tablist">
+          <button id="tab-chain" class="tab is-active" data-view="chain" type="button">
+            CH
+          </button>
+          <button id="tab-rampage" class="tab" data-view="rampage" type="button">
+            Rampage
+          </button>
+          <button id="tab-commands" class="tab" data-view="commands" type="button">
+            Commands
+          </button>
+          <button id="tab-settings" class="tab" data-view="settings" type="button">
+            Settings
+          </button>
+        </nav>
+      </header>
+
+      <section id="view-chain" class="view" data-view="chain">
+        <div class="meta">
+          <div>
+            <span class="k">Tank</span>
+            <strong id="tank-name">—</strong>
+          </div>
+          <div>
+            <span class="k">Interval</span>
+            <strong id="interval">2.0s</strong>
+          </div>
+          <div>
+            <span class="k">Chain</span>
+            <strong id="chain-state">Stopped</strong>
+          </div>
+          <div>
+            <span class="k">Character</span>
+            <strong id="you-name">—</strong>
+          </div>
+        </div>
+
+        <div id="you-banner" class="banner next" hidden>
+          Cast in <span id="you-eta">0.0</span>s
+          <span id="you-offset"></span>
+        </div>
+        <div id="warning" class="banner warn" hidden></div>
+
+        <div id="slots" class="slots"></div>
+        <div id="empty" class="empty">
+          Waiting for a cleric chain.<br />
+          Alfred will pick up CH macros like <code>GG 001 CH -- Tank</code>. Start with
+          <code>!startchain</code>.
+        </div>
+      </section>
+
+      <section id="view-rampage" class="view" data-view="rampage" hidden>
+        <div class="meta">
+          <div>
+            <span class="k">Tank</span>
+            <strong id="r-tank-name">—</strong>
+          </div>
+          <div>
+            <span class="k">Interval</span>
+            <strong id="r-interval">2.0s</strong>
+          </div>
+          <div>
+            <span class="k">Chain</span>
+            <strong id="r-chain-state">Stopped</strong>
+          </div>
+          <div>
+            <span class="k">Character</span>
+            <strong id="r-you-name">—</strong>
+          </div>
+        </div>
+
+        <div id="r-you-banner" class="banner next" hidden>
+          Cast in <span id="r-you-eta">0.0</span>s
+          <span id="r-you-offset"></span>
+        </div>
+        <div id="r-warning" class="banner warn" hidden></div>
+
+        <div id="r-slots" class="slots"></div>
+        <div id="r-empty" class="empty">
+          Waiting for a rampage chain.<br />
+          Use <code>RCH</code> with <code>AAA</code>, <code>BBB</code>, <code>CCC</code>. Start with
+          <code>!rstartchain</code>.
+        </div>
+      </section>
+
+      <section id="view-commands" class="view" data-view="commands" hidden>
+        <p class="commands-lead">
+          Shout, OOC, group, guild, raid, or auction — not say. CH uses numbers
+          (<code>GG 001 CH -- Tank</code>). Rampage uses <code>RCH</code> and letters
+          (<code>GG AAA RCH -- Tank</code>). <code>!take 001</code> and <code>!skip 001</code> go to
+          CH; <code>!take AAA</code> and <code>!skip AAA</code> go to rampage. Bare
+          <code>!skip</code> / <code>!back</code> apply to every chain you are on.
+        </p>
+        <h2 class="commands-heading">CH chain</h2>
+        <div id="command-list" class="commands"></div>
+        <h2 class="commands-heading">Rampage chain</h2>
+        <div id="rampage-command-list" class="commands"></div>
+      </section>
+
+      <section id="view-settings" class="view" data-view="settings" hidden>
+        <label class="field">
+          <span>EverQuest directory</span>
+          <div class="row">
+            <input id="eq-directory" type="text" placeholder="Paste or browse to your EQ folder…" />
+            <button id="browse-eq" type="button">Browse</button>
+          </div>
+          <small id="eq-dir-status">On first launch Alfred looks in common EQ, Steam, Wine, and CrossOver folders. Paste or browse if it missed yours.</small>
+        </label>
+
+        <label class="check">
+          <input id="always-on-top" type="checkbox" />
+          <span>Keep window on top</span>
+        </label>
+
+        <fieldset class="radios">
+          <legend>Audio cue</legend>
+          <label class="check">
+            <input id="sound-enabled" type="radio" name="alert-mode" value="sound" />
+            <span>Play a sound when I am next</span>
+          </label>
+          <label class="check">
+            <input id="metronome-enabled" type="radio" name="alert-mode" value="metronome" />
+            <span>Metronome voice (speak each chain number)</span>
+          </label>
+          <label class="check">
+            <input id="audio-none" type="radio" name="alert-mode" value="none" />
+            <span>None</span>
+          </label>
+        </fieldset>
+
+        <div class="grid three">
+          <label class="field">
+            <span>Sound lead-in (s)</span>
+            <input id="sound-lead" type="number" min="0" step="0.5" />
+          </label>
+          <label class="field">
+            <span>Interval (s)</span>
+            <input id="interval-seconds" type="number" min="0.1" step="0.1" />
+          </label>
+          <label class="field">
+            <span>CH cast (s)</span>
+            <input id="cast-time" type="number" min="0.1" step="0.1" />
+          </label>
+        </div>
+
+        <p id="save-status" class="save-status"></p>
+
+        <dl class="facts">
+          <div>
+            <dt>Character</dt>
+            <dd id="settings-character">—</dd>
+          </div>
+          <div>
+            <dt>Config file</dt>
+            <dd id="config-path">—</dd>
+          </div>
+          <div>
+            <dt>Logs path</dt>
+            <dd id="logs-path">—</dd>
+          </div>
+          <div>
+            <dt>Active log</dt>
+            <dd id="active-log">—</dd>
+          </div>
+        </dl>
+      </section>
+
+      <footer class="status">
+        <span id="watch-dot" class="dot"></span>
+        <span id="watch-status">No EverQuest directory set</span>
+      </footer>
+    </div>
+  </body>
+</html>

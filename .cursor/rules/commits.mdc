@@ -1,0 +1,25 @@
+---
+description: Conventional commit messages without signoff
+alwaysApply: true
+---
+
+# Git commits
+
+Use Conventional Commits. Keep the subject short. Do not add `Signed-off-by`.
+
+Format: `<type>(optional-scope): <summary>`
+
+Types: `feat`, `fix`, `docs`, `refactor`, `perf`, `test`, `ci`, `build`, `chore`.
+
+- Imperative summary (`add`, `fix`, `skip`), not past tense
+- About 50 characters; add a body only when the why is not obvious
+- No `--signoff`, no `Signed-off-by` trailer
+- No `--no-verify` unless the user asks
+- Pass the message through a HEREDOC
+- Commit only when the user asks
+
+```text
+feat(chain): share skip and back across CH and rampage
+fix: stop take from starting the chain clock
+chore(release): 0.2.0
+```
