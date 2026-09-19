@@ -1,6 +1,6 @@
 [package]
 name = "alfred-raid"
-version = "0.3.0"
+version = "0.4.0"
 description = "Alfred raid assistant for the GoodGuys Project1999 guild"
 authors = ["GoodGuys"]
 edition = "2021"
