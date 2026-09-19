@@ -10,7 +10,7 @@ export default defineConfig(() => ({
   //
   // 1. prevent Vite from obscuring rust errors
   clearScreen: false,
-  // 2. tauri expects a fixed port, fail if that port is not available
+  // 2. tauri expects a fixed port if that port is not available
   server: {
     port: 1420,
     strictPort: true,
@@ -25,6 +25,14 @@ export default defineConfig(() => ({
     watch: {
       // 3. tell Vite to ignore watching `src-tauri`
       ignored: ["**/src-tauri/**"],
+    },
+  },
+  build: {
+    rollupOptions: {
+      input: {
+        index: "index.html",
+        tester: "tester.html",
+      },
     },
   },
 }));

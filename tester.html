@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Alfred — Test log</title>
+    <script type="module" src="/src/tester.ts" defer></script>
+  </head>
+  <body class="tester">
+    <div id="app">
+      <header class="top">
+        <div class="brand">
+          <div class="mark" aria-hidden="true">T</div>
+          <div class="brand-copy">
+            <h1>Test log</h1>
+            <p>Same path as the EverQuest log, without being in game</p>
+          </div>
+        </div>
+      </header>
+
+      <section class="view">
+        <p id="you-hint" class="tester-hint">YOU uses your logged-in character when a log is watched.</p>
+
+        <label class="field">
+          <span>Speaker</span>
+          <input
+            id="speaker"
+            list="speaker-names"
+            value="YOU"
+            autocomplete="off"
+            placeholder="YOU or a character name"
+          />
+          <datalist id="speaker-names">
+            <option value="YOU"></option>
+          </datalist>
+          <small>YOU for yourself, or another name such as Portlia</small>
+        </label>
+
+        <label class="field">
+          <span>Channel</span>
+          <select id="channel">
+            <option value="shout">Shout</option>
+            <option value="say">Say</option>
+            <option value="ooc">Out of character</option>
+            <option value="group">Group</option>
+            <option value="guild">Guild</option>
+            <option value="auction">Auction</option>
+            <option value="raid">Raid</option>
+          </select>
+        </label>
+
+        <label class="field" id="message-field">
+          <span>Message</span>
+          <textarea id="message" rows="3" placeholder="!take 001"></textarea>
+          <small>Enter to send · Shift+Enter for a new line</small>
+        </label>
+
+        <button id="send" class="primary" type="button">Send as log line</button>
+        <p id="status" class="save-status"></p>
+        <pre id="preview" class="preview" hidden></pre>
+      </section>
+    </div>
+  </body>
+</html>
