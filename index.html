@@ -56,8 +56,13 @@
         </div>
 
         <div id="you-banner" class="banner next" hidden>
-          Cast in <span id="you-eta">0.0</span>s
-          <span id="you-offset"></span>
+          <div class="you-cast-text">
+            Cast in <span id="you-eta">0.0</span>s
+            <span id="you-offset"></span>
+          </div>
+          <div class="bar-row you-cast-bar">
+            <div class="bar"><span id="you-progress"></span></div>
+          </div>
         </div>
 
         <div id="slots" class="slots"></div>
@@ -89,8 +94,13 @@
         </div>
 
         <div id="r-you-banner" class="banner next" hidden>
-          Cast in <span id="r-you-eta">0.0</span>s
-          <span id="r-you-offset"></span>
+          <div class="you-cast-text">
+            Cast in <span id="r-you-eta">0.0</span>s
+            <span id="r-you-offset"></span>
+          </div>
+          <div class="bar-row you-cast-bar">
+            <div class="bar"><span id="r-you-progress"></span></div>
+          </div>
         </div>
 
         <div id="r-slots" class="slots"></div>
@@ -110,7 +120,7 @@
           CH; <code>!take AAA</code> and <code>!skip AAA</code> go to rampage. Add a name to place
           someone else: <code>!take 001 Portlia</code> or <code>!take Portlia</code>. Bare
           <code>!skip</code> / <code>!back</code> apply to every chain you are on.
-          <code>!startchain</code> and <code>!stopchain</code> start and stop CH and rampage together.
+          <code>!startchain</code> and <code>!stopchain</code> arm and stop CH and rampage together. The clock starts on the first CH or RCH.
         </p>
         <h2 class="commands-heading">CH chain</h2>
         <div id="command-list" class="commands"></div>

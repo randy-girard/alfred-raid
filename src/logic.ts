@@ -22,6 +22,7 @@ export type TankSnapshot = {
   to: number | null;
   intervalSeconds: number;
   running: boolean;
+  armed: boolean;
   startedAtMs: number | null;
   currentNumber: number | null;
   nextNumber: number | null;
@@ -43,6 +44,7 @@ export type ChainSnapshot = {
   youCastIn: number | null;
   youLastOffset: number | null;
   running: boolean;
+  armed: boolean;
   startedAtMs: number | null;
   beatTick: number | null;
   warning: string | null;
@@ -132,7 +134,7 @@ export const CHAIN_COMMANDS: CommandHelp[] = [
     usage: "!startchain",
     aliases: ["!start-chain", "!start", "!start chain"],
     optional: "tank",
-    effect: "Start CH and rampage from now. Omit the tank to start every chain that has clerics; name one to start only that tank.",
+    effect: "Arm CH and rampage. The clock starts on the first CH or RCH, from that cleric. Name a tank to arm only that tank.",
   },
   {
     usage: "!stopchain",
@@ -236,6 +238,21 @@ export function offsetClassName(seconds: number | null | undefined): string {
   return "";
 }
 
+export function chainStateLabel(opts: {
+  running: boolean;
+  armed?: boolean;
+}): string {
+  if (opts.running) return "Running";
+  if (opts.armed) return "Waiting";
+  return "Stopped";
+}
+
+export function tankClockLabel(tank: { running: boolean; armed?: boolean }): string {
+  if (tank.running) return "run";
+  if (tank.armed) return "wait";
+  return "stop";
+}
+
 export function shouldShowYouBanner(opts: {
   running: boolean;
   youCastIn: number | null | undefined;
@@ -243,6 +260,12 @@ export function shouldShowYouBanner(opts: {
 }): boolean {
   if (opts.running) return opts.youCastIn != null;
   return opts.youAreNextIn != null && opts.youAreNextIn <= 8;
+}
+
+export function youCastProgress(snapshot: ChainSnapshot | null | undefined): number {
+  const you = snapshot?.slots.find((slot) => slot.isYou && !slot.skipped);
+  if (!you) return 0;
+  return you.progress;
 }
 
 export type AlertMode = "sound" | "metronome" | "none";
@@ -404,6 +427,10 @@ export function eqDirStatusText(probe: EqDirectoryProbe): { kind: "ok" | "warn";
   };
 }
 
+function nextCastOrigin(slot: SlotSnapshot, startedAtMs: number): number {
+  return Math.max(slot.lastCastMs ?? 0, slot.lastShoutMs ?? 0, startedAtMs);
+}
+
 export function applyCastTiming(
   slot: SlotSnapshot,
   castTimeSeconds: number,
@@ -471,7 +498,7 @@ function scheduleSlots(
       return { ...slot, isCurrent: false, isNext: false, remainingSeconds: 0, progress: 0 };
     }
     if (solo) {
-      const origin = slot.lastCastMs ?? slot.lastShoutMs ?? startedAtMs;
+      const origin = nextCastOrigin(slot, startedAtMs);
       const remaining = Math.max(0, castTimeSeconds - (now - origin) / 1000);
       const progress = castTimeSeconds > 0 ? Math.min(1, remaining / castTimeSeconds) : 0;
       return {

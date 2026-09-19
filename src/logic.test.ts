@@ -25,6 +25,8 @@ import {
   shouldSpeakWrongTarget,
   shouldSpeakAutoTake,
   shouldShowYouBanner,
+  chainStateLabel,
+  youCastProgress,
   shouldSpeakMetronome,
   slotClassName,
   eqDirStatusText,
@@ -68,6 +70,7 @@ function snap(overrides: Partial<ChainSnapshot> = {}): ChainSnapshot {
     youCastIn: 2,
     youLastOffset: null,
     running: false,
+    armed: false,
     startedAtMs: null,
     beatTick: null,
     warning: null,
@@ -232,6 +235,23 @@ describe("helpers", () => {
     expect(shouldShowYouBanner({ running: true, youCastIn: 12, youAreNextIn: null })).toBe(
       true,
     );
+  });
+
+  it("labels a chain as waiting until the first CH", () => {
+    expect(chainStateLabel({ running: false, armed: true })).toBe("Waiting");
+    expect(chainStateLabel({ running: true, armed: false })).toBe("Running");
+    expect(chainStateLabel({ running: false, armed: false })).toBe("Stopped");
+  });
+
+  it("has no next-cast progress when you are not on the chain", () => {
+    expect(youCastProgress(null)).toBe(0);
+    expect(
+      youCastProgress(
+        snap({
+          slots: [slot({ number: 2, player: "Two", isYou: false, progress: 0.8 })],
+        }),
+      ),
+    ).toBe(0);
   });
 
   it("speaks metronome numbers on each new beat", () => {
@@ -551,6 +571,87 @@ describe("liveSnapshot", () => {
     expect(live.slots[0].isNext).toBe(false);
     expect(live.slots[0].remainingSeconds).toBe(9);
     expect(live.youCastIn).toBe(9);
+  });
+
+  it("starts a solo countdown from chain start, not a stale shout", () => {
+    const live = liveSnapshot(
+      snap({
+        running: true,
+        startedAtMs: 20_000,
+        intervalSeconds: 2,
+        currentNumber: 1,
+        nextNumber: 1,
+        slots: [
+          slot({
+            number: 1,
+            isYou: true,
+            lastShoutMs: 1_000,
+            lastCastMs: 1_000,
+          }),
+        ],
+      }),
+      21_000,
+    )!;
+    expect(live.slots[0].remainingSeconds).toBe(9);
+    expect(live.youCastIn).toBe(9);
+  });
+
+  it("resets a solo countdown when the cleric CHs", () => {
+    const live = liveSnapshot(
+      snap({
+        running: true,
+        startedAtMs: 10_000,
+        intervalSeconds: 2,
+        currentNumber: 1,
+        nextNumber: 1,
+        slots: [
+          slot({
+            number: 1,
+            isYou: true,
+            lastShoutMs: 20_000,
+            lastCastMs: 20_000,
+          }),
+        ],
+      }),
+      21_000,
+    )!;
+    expect(live.slots[0].remainingSeconds).toBe(9);
+    expect(live.slots[0].progress).toBe(0.9);
+    expect(live.youCastIn).toBe(9);
+  });
+
+  it("updates your next-cast progress when clerics join or leave", () => {
+    const at = 12_100;
+    const two = liveSnapshot(
+      snap({
+        running: true,
+        startedAtMs: 10_000,
+        intervalSeconds: 2,
+        slots: [
+          slot({ number: 1, isYou: true }),
+          slot({ number: 2, player: "Two", isYou: false }),
+        ],
+      }),
+      at,
+    )!;
+    const three = liveSnapshot(
+      snap({
+        running: true,
+        startedAtMs: 10_000,
+        intervalSeconds: 2,
+        slots: [
+          slot({ number: 1, isYou: true }),
+          slot({ number: 2, player: "Two", isYou: false }),
+          slot({ number: 3, player: "Three", isYou: false }),
+        ],
+      }),
+      at,
+    )!;
+    expect(two.youCastIn).toBeCloseTo(1.9, 5);
+    expect(youCastProgress(two)).toBeCloseTo(1.9 / 4, 5);
+    expect(three.youCastIn).toBeCloseTo(3.9, 5);
+    expect(youCastProgress(three)).toBeCloseTo(3.9 / 6, 5);
+    expect(three.youCastIn!).toBeGreaterThan(two.youCastIn!);
   });
 
   it("keeps a CH cast bar ticking while the chain is running", () => {

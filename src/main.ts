@@ -13,6 +13,9 @@ import {
   nextUpSpeech,
   shouldPlayClaimAlert,
   shouldShowYouBanner,
+  youCastProgress,
+  chainStateLabel,
+  tankClockLabel,
   shouldShowWarning,
   isAlertEnabled,
   shouldSpeakWrongTarget,
@@ -51,6 +54,7 @@ type PanelIds = {
   banner: string;
   eta: string;
   offset: string;
+  progress: string;
 };
 
 type AppConfig = {
@@ -169,6 +173,7 @@ function renderChain() {
       banner: "you-banner",
       eta: "you-eta",
       offset: "you-offset",
+      progress: "you-progress",
     },
     "chain",
   );
@@ -184,6 +189,7 @@ function renderChain() {
       banner: "r-you-banner",
       eta: "r-you-eta",
       offset: "r-you-offset",
+      progress: "r-you-progress",
     },
     "rampage",
   );
@@ -210,16 +216,12 @@ function renderPanel(
       : live.tanks.map((tank) => `${tank.intervalSeconds.toFixed(1)}s`).join(" · ")
     : "—";
   $(ids.state).textContent = live?.yourTank
-    ? live.running
-      ? "Running"
-      : "Stopped"
-    : live?.tanks?.some((tank) => tank.running)
+    ? chainStateLabel({ running: live.running, armed: live.armed })
+    : live?.tanks?.some((tank) => tank.running || tank.armed)
       ? live.tanks
-          .map((tank) => `${tank.name} ${tank.running ? "run" : "stop"}`)
+          .map((tank) => `${tank.name} ${tankClockLabel(tank)}`)
           .join(" · ")
-      : live?.running
-        ? "Running"
-        : "Stopped";
+      : chainStateLabel({ running: live?.running ?? false, armed: live?.armed });
   $(ids.youName).textContent = live?.yourName || watch?.character || "—";
 
   if (!live || live.slots.length === 0) {
@@ -302,6 +304,8 @@ function renderPanel(
     $(ids.eta).textContent = (eta ?? 0).toFixed(1);
     const offsetEl = $(ids.offset);
     offsetEl.textContent = live?.youLastOffset != null ? ` · ${formatOffset(live.youLastOffset)}` : "";
+    const width = Math.round(youCastProgress(live) * 1000) / 10;
+    $(ids.progress).style.width = `${width}%`;
     if (audible && eta != null) maybeChime(eta, kind);
   } else {
     banner.hidden = true;
