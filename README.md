@@ -108,9 +108,9 @@ Sound, metronome, and claim alerts follow whichever tab is visible so the two cl
 
 `!startchain` arms the chain. The clock does not run until the first CH or RCH after that, and it starts from whoever went. Mid-fight `!startchain` waits for the next shout the same way. Every Alfred shows **Chain is starting** and speaks it unless you turn that voice off in Settings.
 
-Without `!startchain`, the list still follows the last CH or RCH so HP-based chains keep order without a timer. Short shout gaps around the chain interval still start a local clock if you joined late.
+Without `!startchain`, the list still follows the last CH or RCH so HP-based chains keep order. The clock stays stopped until someone uses `!startchain`.
 
-If you join late and missed `!startchain`, Alfred watches CH/RCH shouts on the tank you took, infers the interval from those gaps (rounded to the nearest second), and starts **your local clock** so the latest shouter is current and you sit in the right place in that chain. Everyone else already has you from `!take` / your macro; this only syncs your app.
+If you join late, take your number as usual. The list follows the last shout on your tank, and `!startchain` is what starts the timer.
 
 If you have a number, the panel, countdown, and metronome follow **your tank's chain only**.
 
