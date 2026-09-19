@@ -3,6 +3,12 @@
 NPM ?= npm
 CARGO ?= cargo
 
+ifneq ($(wildcard src-tauri/updater.key),)
+export TAURI_SIGNING_PRIVATE_KEY := $(abspath src-tauri/updater.key)
+export TAURI_SIGNING_PRIVATE_KEY_PATH := $(abspath src-tauri/updater.key)
+export TAURI_SIGNING_PRIVATE_KEY_PASSWORD ?=
+endif
+
 .PHONY: help setup dev run build test test-js test-rust coverage check fmt clean config
 
 help: ## Show available targets

@@ -5,11 +5,11 @@ mod log_watcher;
 mod parser;
 
 use chain::{ChainSnapshot, ChainState};
-use serde::Serialize;
 use config::{geometry_on_a_monitor, AppConfig, Rect, WindowGeometry};
 use engine::apply_lines;
 use log_watcher::{spawn_watcher, EqDirectoryProbe, WatchEvent, WatchStatus, WatcherHandle};
 use parser::{format_test_log_line, Parser, TestChannel};
+use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
@@ -65,7 +65,8 @@ impl AppState {
         let parser = Parser::with_chain_tag(&config.chain_tag);
         let ttl = config.alert_dismiss_ms();
         let mut chain = ChainState::new(config.interval_seconds, config.cast_time_seconds);
-        let mut rampage = ChainState::new_rampage(config.interval_seconds, config.cast_time_seconds);
+        let mut rampage =
+            ChainState::new_rampage(config.interval_seconds, config.cast_time_seconds);
         chain.warning_ttl_ms = ttl;
         rampage.warning_ttl_ms = ttl;
         Self {
@@ -109,7 +110,11 @@ fn inspect_eq_directory(path: String) -> EqDirectoryProbe {
 }
 
 #[tauri::command]
-fn save_settings(state: State<AppState>, app: AppHandle, patch: SettingsPatch) -> Result<AppConfig, String> {
+fn save_settings(
+    state: State<AppState>,
+    app: AppHandle,
+    patch: SettingsPatch,
+) -> Result<AppConfig, String> {
     let mut config = state.config.lock().map_err(|e| e.to_string())?;
     let mut restart_watch = false;
 
@@ -153,13 +158,29 @@ fn save_settings(state: State<AppState>, app: AppHandle, patch: SettingsPatch) -
     }
     if let Some(v) = patch.interval_seconds {
         config.interval_seconds = v.max(0.1);
-        state.chain.lock().map_err(|e| e.to_string())?.interval_seconds = config.interval_seconds;
-        state.rampage.lock().map_err(|e| e.to_string())?.interval_seconds = config.interval_seconds;
+        state
+            .chain
+            .lock()
+            .map_err(|e| e.to_string())?
+            .interval_seconds = config.interval_seconds;
+        state
+            .rampage
+            .lock()
+            .map_err(|e| e.to_string())?
+            .interval_seconds = config.interval_seconds;
     }
     if let Some(v) = patch.cast_time_seconds {
         config.cast_time_seconds = v.max(0.1);
-        state.chain.lock().map_err(|e| e.to_string())?.cast_time_seconds = config.cast_time_seconds;
-        state.rampage.lock().map_err(|e| e.to_string())?.cast_time_seconds = config.cast_time_seconds;
+        state
+            .chain
+            .lock()
+            .map_err(|e| e.to_string())?
+            .cast_time_seconds = config.cast_time_seconds;
+        state
+            .rampage
+            .lock()
+            .map_err(|e| e.to_string())?
+            .cast_time_seconds = config.cast_time_seconds;
     }
     if let Some(v) = patch.tail_poll_ms {
         config.tail_poll_ms = v.max(50);
@@ -171,7 +192,11 @@ fn save_settings(state: State<AppState>, app: AppHandle, patch: SettingsPatch) -
     if let Some(tag) = patch.chain_tag {
         let tag = config::normalize_chain_tag(&tag);
         config.chain_tag = tag.clone();
-        state.parser.lock().map_err(|e| e.to_string())?.set_chain_tag(&tag);
+        state
+            .parser
+            .lock()
+            .map_err(|e| e.to_string())?
+            .set_chain_tag(&tag);
     }
     if let Some(v) = patch.alert_slot_taken {
         config.alert_slot_taken = v;
@@ -188,8 +213,25 @@ fn save_settings(state: State<AppState>, app: AppHandle, patch: SettingsPatch) -
     if let Some(v) = patch.alert_dismiss_seconds {
         config.alert_dismiss_seconds = v.max(0.0);
         let ttl = config.alert_dismiss_ms();
-        state.chain.lock().map_err(|e| e.to_string())?.warning_ttl_ms = ttl;
-        state.rampage.lock().map_err(|e| e.to_string())?.warning_ttl_ms = ttl;
+        state
+            .chain
+            .lock()
+            .map_err(|e| e.to_string())?
+            .warning_ttl_ms = ttl;
+        state
+            .rampage
+            .lock()
+            .map_err(|e| e.to_string())?
+            .warning_ttl_ms = ttl;
+    }
+    if let Some(v) = patch.overlay_opacity {
+        config.overlay_opacity = AppConfig::clamp_overlay_opacity(v);
+    }
+    if let Some(v) = patch.overlay_clickthrough {
+        config.overlay_clickthrough = v;
+        if let Some(window) = app.get_webview_window("overlay") {
+            apply_overlay_clickthrough(&window, v);
+        }
     }
 
     config.save().map_err(|e| e.to_string())?;
@@ -265,6 +307,88 @@ async fn open_tester(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+async fn open_overlay(app: AppHandle) -> Result<(), String> {
+    let (width, height, position, clickthrough) = {
+        let state = app.state::<AppState>();
+        let config = state.config.lock().map_err(|e| e.to_string())?;
+        let geom = config.overlay_geometry();
+        (
+            geom.map(|g| g.width).unwrap_or(480.0),
+            geom.map(|g| g.height).unwrap_or(360.0),
+            geom.map(|g| (g.x, g.y)),
+            config.overlay_clickthrough,
+        )
+    };
+
+    if let Some(existing) = app.get_webview_window("overlay") {
+        apply_overlay_clickthrough(&existing, clickthrough);
+        let _ = existing.show();
+        let _ = existing.unminimize();
+        if !clickthrough {
+            let _ = existing.set_focus();
+        }
+        return Ok(());
+    }
+
+    let window = WebviewWindowBuilder::new(&app, "overlay", WebviewUrl::App("overlay.html".into()))
+        .title("Alfred — Overlay")
+        .inner_size(width, height)
+        .min_inner_size(config::MIN_OVERLAY_WIDTH, config::MIN_OVERLAY_HEIGHT)
+        .decorations(false)
+        .transparent(true)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .resizable(true)
+        .accept_first_mouse(true)
+        .visible(false)
+        .focused(!clickthrough)
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    if let Some((x, y)) = position {
+        let geom = WindowGeometry {
+            x,
+            y,
+            width,
+            height,
+        };
+        let scale = window.scale_factor().unwrap_or(1.0);
+        if geometry_on_a_monitor(geom, scale, &monitor_rects(&window)) {
+            let _ = window.set_position(Position::Logical(LogicalPosition { x, y }));
+        }
+    }
+    apply_overlay_clickthrough(&window, clickthrough);
+    let _ = window.show();
+    Ok(())
+}
+
+#[tauri::command]
+fn hide_overlay(app: AppHandle) {
+    if let Some(window) = app.get_webview_window("overlay") {
+        persist_window_geometry(&window);
+        let _ = window.hide();
+    }
+}
+
+fn apply_overlay_clickthrough(window: &WebviewWindow, clickthrough: bool) {
+    let _ = window.set_ignore_cursor_events(clickthrough);
+}
+
+fn toggle_overlay(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("overlay") {
+        if window.is_visible().unwrap_or(false) {
+            persist_window_geometry(&window);
+            let _ = window.hide();
+            return;
+        }
+    }
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let _ = open_overlay(handle).await;
+    });
+}
+
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SettingsPatch {
@@ -283,6 +407,8 @@ struct SettingsPatch {
     alert_auto_take_sound: Option<bool>,
     alert_start_chain_sound: Option<bool>,
     alert_dismiss_seconds: Option<f64>,
+    overlay_opacity: Option<f64>,
+    overlay_clickthrough: Option<bool>,
 }
 
 fn start_watcher(app: &AppHandle, state: &AppState) -> Result<(), String> {
@@ -305,71 +431,68 @@ fn start_watcher(app: &AppHandle, state: &AppState) -> Result<(), String> {
     }
 
     let handle = app.clone();
-    *watcher_slot = Some(spawn_watcher(eq_dir, poll_ms, move |event| {
-        match event {
-            WatchEvent::Status(status) => {
-                if let Some(state) = handle.try_state::<AppState>() {
-                    if let Some(name) = &status.character {
-                        let mut changed = false;
-                        if let Ok(mut chain) = state.chain.lock() {
-                            let before = chain.your_name.clone();
-                            chain.set_your_name(name.clone());
-                            changed |= chain.your_name != before;
-                        }
-                        if let Ok(mut rampage) = state.rampage.lock() {
-                            let before = rampage.your_name.clone();
-                            rampage.set_your_name(name.clone());
-                            changed |= rampage.your_name != before;
-                        }
-                        if changed {
-                            if let (Ok(chain), Ok(rampage)) =
-                                (state.chain.lock(), state.rampage.lock())
-                            {
-                                let _ = handle.emit(
-                                    "raid-updated",
-                                    RaidSnapshot {
-                                        chain: chain.snapshot(),
-                                        rampage: rampage.snapshot(),
-                                    },
-                                );
-                            }
-                        }
+    *watcher_slot = Some(spawn_watcher(eq_dir, poll_ms, move |event| match event {
+        WatchEvent::Status(status) => {
+            if let Some(state) = handle.try_state::<AppState>() {
+                if let Some(name) = &status.character {
+                    let mut changed = false;
+                    if let Ok(mut chain) = state.chain.lock() {
+                        let before = chain.your_name.clone();
+                        chain.set_your_name(name.clone());
+                        changed |= chain.your_name != before;
                     }
-                    if let Ok(mut slot) = state.status.lock() {
-                        *slot = status.clone();
+                    if let Ok(mut rampage) = state.rampage.lock() {
+                        let before = rampage.your_name.clone();
+                        rampage.set_your_name(name.clone());
+                        changed |= rampage.your_name != before;
+                    }
+                    if changed {
+                        if let (Ok(chain), Ok(rampage)) = (state.chain.lock(), state.rampage.lock())
+                        {
+                            let _ = handle.emit(
+                                "raid-updated",
+                                RaidSnapshot {
+                                    chain: chain.snapshot(),
+                                    rampage: rampage.snapshot(),
+                                },
+                            );
+                        }
                     }
                 }
-                let _ = handle.emit("watch-status", status);
+                if let Ok(mut slot) = state.status.lock() {
+                    *slot = status.clone();
+                }
             }
-            WatchEvent::Lines { character, lines } => {
-                if let Some(state) = handle.try_state::<AppState>() {
-                    let parser = match state.parser.lock() {
-                        Ok(p) => p,
-                        Err(_) => return,
-                    };
-                    let mut chain = match state.chain.lock() {
-                        Ok(c) => c,
-                        Err(_) => return,
-                    };
-                    let mut rampage = match state.rampage.lock() {
-                        Ok(c) => c,
-                        Err(_) => return,
-                    };
-                    if apply_lines(
-                        &parser,
-                        &mut chain,
-                        &mut rampage,
-                        character.as_deref(),
-                        &lines,
-                    ) {
-                        let _ = handle.emit(
-                            "raid-updated",
-                            RaidSnapshot {
-                                chain: chain.snapshot(),
-                                rampage: rampage.snapshot(),
-                            },
-                        );
-                    }
+            let _ = handle.emit("watch-status", status);
+        }
+        WatchEvent::Lines { character, lines } => {
+            if let Some(state) = handle.try_state::<AppState>() {
+                let parser = match state.parser.lock() {
+                    Ok(p) => p,
+                    Err(_) => return,
+                };
+                let mut chain = match state.chain.lock() {
+                    Ok(c) => c,
+                    Err(_) => return,
+                };
+                let mut rampage = match state.rampage.lock() {
+                    Ok(c) => c,
+                    Err(_) => return,
+                };
+                if apply_lines(
+                    &parser,
+                    &mut chain,
+                    &mut rampage,
+                    character.as_deref(),
+                    &lines,
+                ) {
+                    let _ = handle.emit(
+                        "raid-updated",
+                        RaidSnapshot {
+                            chain: chain.snapshot(),
+                            rampage: rampage.snapshot(),
+                        },
+                    );
                 }
             }
         }
@@ -410,8 +533,17 @@ fn current_window_geometry(window: &WebviewWindow) -> Option<WindowGeometry> {
     let scale = window.scale_factor().ok()?;
     let pos = window.outer_position().ok()?.to_logical::<f64>(scale);
     let size = window.outer_size().ok()?.to_logical::<f64>(scale);
-    let width = config::clamp_window_width(size.width)?;
-    let height = config::clamp_window_height(size.height)?;
+    let overlay = window.label() == "overlay";
+    let width = if overlay {
+        config::clamp_overlay_width(size.width)?
+    } else {
+        config::clamp_window_width(size.width)?
+    };
+    let height = if overlay {
+        config::clamp_overlay_height(size.height)?
+    } else {
+        config::clamp_window_height(size.height)?
+    };
     Some(WindowGeometry {
         x: pos.x,
         y: pos.y,
@@ -430,15 +562,35 @@ fn persist_window_geometry(window: &WebviewWindow) {
     let Ok(mut config) = state.config.lock() else {
         return;
     };
-    if config.window_geometry() == Some(geom) {
-        return;
+    match window.label() {
+        "main" => {
+            if config.window_geometry() == Some(geom) {
+                return;
+            }
+            config.set_window_geometry(geom);
+        }
+        "overlay" => {
+            if config.overlay_geometry() == Some(geom) {
+                return;
+            }
+            config.set_overlay_geometry(geom);
+        }
+        _ => return,
     }
-    config.set_window_geometry(geom);
     let _ = config.save();
 }
 
-fn schedule_window_save(window: &WebviewWindow) {
-    let Some(state) = window.try_state::<AppState>() else {
+fn persist_labeled_windows(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        persist_window_geometry(&window);
+    }
+    if let Some(window) = app.get_webview_window("overlay") {
+        persist_window_geometry(&window);
+    }
+}
+
+fn schedule_window_save(app: &AppHandle) {
+    let Some(state) = app.try_state::<AppState>() else {
         return;
     };
     if let Ok(mut last) = state.window_persist.last_change.lock() {
@@ -447,10 +599,10 @@ fn schedule_window_save(window: &WebviewWindow) {
     if state.window_persist.running.swap(true, Ordering::SeqCst) {
         return;
     }
-    let window = window.clone();
+    let app = app.clone();
     thread::spawn(move || loop {
         thread::sleep(Duration::from_millis(300));
-        let Some(state) = window.try_state::<AppState>() else {
+        let Some(state) = app.try_state::<AppState>() else {
             break;
         };
         let elapsed = state
@@ -461,11 +613,8 @@ fn schedule_window_save(window: &WebviewWindow) {
             .map(|when| when.elapsed())
             .unwrap_or(Duration::from_secs(1));
         if elapsed >= Duration::from_millis(300) {
-            persist_window_geometry(&window);
-            state
-                .window_persist
-                .running
-                .store(false, Ordering::SeqCst);
+            persist_labeled_windows(&app);
+            state.window_persist.running.store(false, Ordering::SeqCst);
             break;
         }
     });
@@ -501,6 +650,8 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .manage(AppState::new())
         .invoke_handler(tauri::generate_handler![
             get_config,
@@ -510,7 +661,9 @@ pub fn run() {
             inspect_eq_directory,
             save_settings,
             inject_test_line,
-            open_tester
+            open_tester,
+            open_overlay,
+            hide_overlay
         ])
         .setup(|app| {
             let show = MenuItem::with_id(app, "show", "Show Alfred", true, None::<&str>)?;
@@ -519,11 +672,15 @@ pub fn run() {
             let commands = MenuItem::with_id(app, "commands", "Commands", true, None::<&str>)?;
             let settings = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
             let tester = MenuItem::with_id(app, "tester", "Test log", true, None::<&str>)?;
+            let overlay = MenuItem::with_id(app, "overlay", "Overlay", true, None::<&str>)?;
+            let updates =
+                MenuItem::with_id(app, "updates", "Check for updates", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(
                 app,
                 &[
-                    &show, &chain, &rampage, &commands, &settings, &tester, &quit,
+                    &show, &chain, &rampage, &commands, &settings, &tester, &overlay, &updates,
+                    &quit,
                 ],
             )?;
 
@@ -562,6 +719,11 @@ pub fn run() {
                             let _ = open_tester(handle).await;
                         });
                     }
+                    "overlay" => toggle_overlay(app),
+                    "updates" => {
+                        show_main_window(app);
+                        let _ = app.emit("check-updates", ());
+                    }
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
@@ -579,7 +741,11 @@ pub fn run() {
             {
                 let handle = app.handle();
                 let state = handle.state::<AppState>();
-                let always_on_top = state.config.lock().map(|c| c.always_on_top).unwrap_or(false);
+                let always_on_top = state
+                    .config
+                    .lock()
+                    .map(|c| c.always_on_top)
+                    .unwrap_or(false);
                 if let Some(window) = handle.get_webview_window("main") {
                     let _ = window.set_always_on_top(always_on_top);
                     apply_saved_window(&window, state.inner());
@@ -590,37 +756,29 @@ pub fn run() {
 
             Ok(())
         })
-        .on_window_event(|window, event| {
-            match event {
-                tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_) => {
-                    if window.label() != "main" {
-                        return;
-                    }
-                    if let Some(main) = main_window(window) {
-                        schedule_window_save(&main);
-                    }
+        .on_window_event(|window, event| match event {
+            tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_) => {
+                if window.label() != "main" && window.label() != "overlay" {
+                    return;
                 }
-                tauri::WindowEvent::CloseRequested { api, .. } => {
-                    api.prevent_close();
-                    if window.label() == "main" {
-                        if let Some(main) = main_window(window) {
-                            persist_window_geometry(&main);
-                            let _ = main.hide();
-                        }
-                    } else {
-                        let _ = window.hide();
-                    }
-                }
-                _ => {}
+                schedule_window_save(window.app_handle());
             }
+            tauri::WindowEvent::CloseRequested { api, .. } => {
+                api.prevent_close();
+                if let Some(webview) = main_window(window) {
+                    persist_window_geometry(&webview);
+                    let _ = webview.hide();
+                } else {
+                    let _ = window.hide();
+                }
+            }
+            _ => {}
         })
         .build(tauri::generate_context!())
         .expect("error while starting Alfred")
         .run(|app, event| {
             if let tauri::RunEvent::ExitRequested { .. } = event {
-                if let Some(window) = app.get_webview_window("main") {
-                    persist_window_geometry(&window);
-                }
+                persist_labeled_windows(app);
             }
         });
 }

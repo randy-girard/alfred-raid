@@ -30,6 +30,12 @@ import {
   youCastProgress,
   shouldSpeakMetronome,
   slotClassName,
+  clampOverlayOpacity,
+  overlayPanelHtml,
+  updateAvailableMessage,
+  updateUpToDateMessage,
+  updateProgressLabel,
+  updateNotesPreview,
   eqDirStatusText,
   watchStatusLabel,
   type ChainSnapshot,
@@ -499,6 +505,42 @@ describe("helpers", () => {
         slot({ isCurrent: true, isNext: true, isYou: true, skipped: true }),
       ),
     ).toBe("slot is-current is-next is-you is-skipped");
+  });
+});
+
+describe("overlay helpers", () => {
+  it("clamps overlay opacity", () => {
+    expect(clampOverlayOpacity(0.85)).toBe(0.85);
+    expect(clampOverlayOpacity(0)).toBe(0.25);
+    expect(clampOverlayOpacity(2)).toBe(1);
+    expect(clampOverlayOpacity(Number.NaN)).toBe(0.85);
+  });
+
+  it("renders compact chain and rampage panels", () => {
+    const html = overlayPanelHtml(snap({ running: true, youCastIn: 3 }), "CH");
+    expect(html).toContain("CH");
+    expect(html).toContain("Running");
+    expect(html).toContain("Clericone");
+    expect(html).toContain("Cast in 3.0s");
+    expect(overlayPanelHtml(null, "Rampage")).toContain("Waiting");
+  });
+});
+
+describe("update helpers", () => {
+  it("describes an available update and progress", () => {
+    expect(
+      updateAvailableMessage({ version: "0.2.0", currentVersion: "0.1.0" }),
+    ).toBe("Alfred 0.2.0 is available. You have 0.1.0.");
+    expect(updateUpToDateMessage("0.1.0")).toBe("You're on the latest version (0.1.0).");
+    expect(updateProgressLabel(0, 0)).toBe("Downloading update…");
+    expect(updateProgressLabel(50, 100)).toBe("Downloading update… 50%");
+    expect(updateProgressLabel(3, 2)).toBe("Downloading update… 100%");
+  });
+
+  it("trims release notes for the banner", () => {
+    expect(updateNotesPreview("  New overlay.  ")).toBe("New overlay.");
+    expect(updateNotesPreview("")).toBe("");
+    expect(updateNotesPreview("a".repeat(12), 10)).toBe("aaaaaaaaaa…");
   });
 });
 

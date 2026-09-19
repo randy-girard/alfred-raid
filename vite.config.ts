@@ -32,6 +32,7 @@ export default defineConfig(() => ({
       input: {
         index: "index.html",
         tester: "tester.html",
+        overlay: "overlay.html",
       },
     },
   },

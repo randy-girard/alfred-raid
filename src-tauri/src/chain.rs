@@ -350,19 +350,20 @@ impl ChainState {
                     Err(warning) => Some(warning),
                 }
             }
-            ChainCommand::Back { number } => match self.resolve_slot_number(number, &speaker, "back")
-            {
-                Ok(number) => {
-                    let key = self.tank_key_for(number);
-                    let prev = self.running_current(&key, now);
-                    self.skipped.remove(&number);
-                    if self.clock_running(&key) {
-                        self.preserve_beat(key, now, prev);
+            ChainCommand::Back { number } => {
+                match self.resolve_slot_number(number, &speaker, "back") {
+                    Ok(number) => {
+                        let key = self.tank_key_for(number);
+                        let prev = self.running_current(&key, now);
+                        self.skipped.remove(&number);
+                        if self.clock_running(&key) {
+                            self.preserve_beat(key, now, prev);
+                        }
+                        None
                     }
-                    None
+                    Err(warning) => Some(warning),
                 }
-                Err(warning) => Some(warning),
-            },
+            }
             ChainCommand::ResetChain => {
                 self.slots.clear();
                 self.skipped.clear();
@@ -485,13 +486,7 @@ impl ChainState {
             Some(number) => number,
             None => {
                 if let Some(existing) = self.slot_number_for_player(&player) {
-                    self.announce_auto_take(
-                        existing,
-                        &player,
-                        is_you,
-                        now,
-                        true,
-                    );
+                    self.announce_auto_take(existing, &player, is_you, now, true);
                     return None;
                 }
                 match self.next_free_slot() {
@@ -583,7 +578,12 @@ impl ChainState {
     }
 
     fn announce_start_chain(&mut self, now: u64) {
-        self.set_warning_at("Chain is starting.".into(), now, true, WarningKind::StartChain);
+        self.set_warning_at(
+            "Chain is starting.".into(),
+            now,
+            true,
+            WarningKind::StartChain,
+        );
         self.warning_speech = Some("Chain is starting".into());
     }
 
@@ -662,9 +662,9 @@ impl ChainState {
             }
             you_cast_in
         });
-        let you_last_offset = self.your_slot_number().and_then(|n| {
-            self.slots.get(&n).and_then(|s| s.last_offset_seconds)
-        });
+        let you_last_offset = self
+            .your_slot_number()
+            .and_then(|n| self.slots.get(&n).and_then(|s| s.last_offset_seconds));
 
         let slots = self
             .slots
@@ -858,9 +858,9 @@ impl ChainState {
     ) -> Result<u32, String> {
         match number {
             Some(number) => Ok(number),
-            None => self.slot_number_for_player(speaker).ok_or_else(|| {
-                format!("Cannot {verb}: {speaker} is not in the chain.")
-            }),
+            None => self
+                .slot_number_for_player(speaker)
+                .ok_or_else(|| format!("Cannot {verb}: {speaker} is not in the chain.")),
         }
     }
 
@@ -1418,7 +1418,9 @@ impl ChainState {
             .as_ref()
             .is_some_and(|mt| mt.eq_ignore_ascii_case(&name))
         {
-            return Some(format!("{name} is the main tank. Use !ot or a different name."));
+            return Some(format!(
+                "{name} is the main tank. Use !ot or a different name."
+            ));
         }
         for tank in &self.tanks {
             if tank.name.eq_ignore_ascii_case(&name) {
@@ -1623,9 +1625,27 @@ mod tests {
     fn filled() -> ChainState {
         let mut chain = ChainState::new(2.0, 10.0);
         chain.set_your_name("Clericone".into());
-        chain.apply_command(ChainCommand::Take { player: None, number: 1 }, "Clericone".into());
-        chain.apply_command(ChainCommand::Take { player: None, number: 2 }, "Two".into());
-        chain.apply_command(ChainCommand::Take { player: None, number: 3 }, "Three".into());
+        chain.apply_command(
+            ChainCommand::Take {
+                player: None,
+                number: 1,
+            },
+            "Clericone".into(),
+        );
+        chain.apply_command(
+            ChainCommand::Take {
+                player: None,
+                number: 2,
+            },
+            "Two".into(),
+        );
+        chain.apply_command(
+            ChainCommand::Take {
+                player: None,
+                number: 3,
+            },
+            "Three".into(),
+        );
         chain
     }
 
@@ -1650,7 +1670,13 @@ mod tests {
     fn take_moves_the_player_off_their_old_number() {
         let mut chain = filled();
         chain.apply_command(ChainCommand::Skip { number: Some(1) }, "Lead".into());
-        chain.apply_command(ChainCommand::Take { player: None, number: 8 }, "You".into());
+        chain.apply_command(
+            ChainCommand::Take {
+                player: None,
+                number: 8,
+            },
+            "You".into(),
+        );
         assert!(chain.slots.get(&1).is_none());
         assert!(!chain.skipped.contains(&1));
         assert_eq!(chain.slots.get(&8).unwrap().player, "You");
@@ -1663,7 +1689,14 @@ mod tests {
     fn take_does_not_start_a_timer() {
         let mut chain = ChainState::new(2.0, 10.0);
         chain.set_your_name("Clericone".into());
-        chain.apply_command_at(ChainCommand::Take { player: None, number: 1 }, "You".into(), 1_000);
+        chain.apply_command_at(
+            ChainCommand::Take {
+                player: None,
+                number: 1,
+            },
+            "You".into(),
+            1_000,
+        );
         let snap = chain.snapshot_at(1_500);
         assert!(!snap.running);
         assert_eq!(snap.current_number, None);
@@ -1679,7 +1712,13 @@ mod tests {
     fn retaking_the_same_number_does_not_clear_its_skip() {
         let mut chain = filled();
         chain.apply_command(ChainCommand::Skip { number: Some(1) }, "Lead".into());
-        chain.apply_command(ChainCommand::Take { player: None, number: 1 }, "You".into());
+        chain.apply_command(
+            ChainCommand::Take {
+                player: None,
+                number: 1,
+            },
+            "You".into(),
+        );
         assert!(chain.skipped.contains(&1));
         assert_eq!(chain.slots.get(&1).unwrap().player, "You");
     }
@@ -1710,7 +1749,13 @@ mod tests {
     #[test]
     fn take_occupied_does_not_replace_the_occupant() {
         let mut chain = filled();
-        chain.apply_command(ChainCommand::Take { player: None, number: 2 }, "Clericone".into());
+        chain.apply_command(
+            ChainCommand::Take {
+                player: None,
+                number: 2,
+            },
+            "Clericone".into(),
+        );
         assert_eq!(chain.slots.get(&2).unwrap().player, "Two");
         assert_eq!(chain.slots.get(&1).unwrap().player, "Clericone");
         assert_eq!(chain.warning.as_deref(), Some("002 is already taken."));
@@ -1735,7 +1780,13 @@ mod tests {
         assert_eq!(chain.warning_speech, None);
         assert!(!chain.warning_urgent);
 
-        chain.apply_command(ChainCommand::Take { player: None, number: 4 }, "Three".into());
+        chain.apply_command(
+            ChainCommand::Take {
+                player: None,
+                number: 4,
+            },
+            "Three".into(),
+        );
         chain.apply_command(ChainCommand::TakeNext { player: None }, "Four".into());
         assert_eq!(chain.slots.get(&3).unwrap().player, "Four");
         assert_eq!(chain.warning.as_deref(), Some("Four got 003."));
@@ -1775,10 +1826,7 @@ mod tests {
         yours_take.apply_heal(call("Clericone", 2, true));
         assert_eq!(yours_take.slots.get(&2).unwrap().player, "Two");
         assert_eq!(yours_take.slots.get(&1).unwrap().player, "Clericone");
-        assert_eq!(
-            yours_take.warning.as_deref(),
-            Some("002 is already taken.")
-        );
+        assert_eq!(yours_take.warning.as_deref(), Some("002 is already taken."));
         assert!(yours_take.warning_urgent);
 
         let mut others = filled();
@@ -1862,9 +1910,27 @@ mod tests {
     #[test]
     fn next_wraps_around_and_skips_gaps() {
         let mut chain = ChainState::new(2.0, 10.0);
-        chain.apply_command(ChainCommand::Take { player: None, number: 1 }, "A".into());
-        chain.apply_command(ChainCommand::Take { player: None, number: 5 }, "B".into());
-        chain.apply_command(ChainCommand::Take { player: None, number: 9 }, "C".into());
+        chain.apply_command(
+            ChainCommand::Take {
+                player: None,
+                number: 1,
+            },
+            "A".into(),
+        );
+        chain.apply_command(
+            ChainCommand::Take {
+                player: None,
+                number: 5,
+            },
+            "B".into(),
+        );
+        chain.apply_command(
+            ChainCommand::Take {
+                player: None,
+                number: 9,
+            },
+            "C".into(),
+        );
         assert_eq!(chain.next_after(5), Some(9));
         assert_eq!(chain.next_after(9), Some(1));
         chain.apply_command(ChainCommand::Skip { number: Some(1) }, "Lead".into());
@@ -1875,7 +1941,13 @@ mod tests {
     fn empty_or_all_skipped_has_no_next() {
         let mut chain = ChainState::new(2.0, 10.0);
         assert_eq!(chain.next_after(1), None);
-        chain.apply_command(ChainCommand::Take { player: None, number: 1 }, "A".into());
+        chain.apply_command(
+            ChainCommand::Take {
+                player: None,
+                number: 1,
+            },
+            "A".into(),
+        );
         chain.apply_command(ChainCommand::Skip { number: Some(1) }, "Lead".into());
         assert_eq!(chain.next_after(1), None);
     }
@@ -2005,7 +2077,11 @@ mod tests {
     #[test]
     fn running_chain_keeps_ch_cast_progress() {
         let mut chain = filled();
-        chain.apply_command_at(ChainCommand::StartChain { tank: None }, "Lead".into(), 10_000);
+        chain.apply_command_at(
+            ChainCommand::StartChain { tank: None },
+            "Lead".into(),
+            10_000,
+        );
         chain.apply_heal_at(call("Two", 2, false), 12_000);
         let snap = chain.snapshot_at(14_000);
         let two = snap.slots.iter().find(|s| s.number == 2).unwrap();
@@ -2039,7 +2115,14 @@ mod tests {
         let first = chain.snapshot_at(10_000);
         assert_eq!(first.current_number, Some(2));
         assert_eq!(first.next_number, Some(3));
-        assert!(first.slots.iter().find(|s| s.number == 2).unwrap().is_current);
+        assert!(
+            first
+                .slots
+                .iter()
+                .find(|s| s.number == 2)
+                .unwrap()
+                .is_current
+        );
         assert!(first.slots.iter().find(|s| s.number == 3).unwrap().is_next);
 
         chain.apply_heal_at(call("Three", 3, false), 20_000);
@@ -2048,7 +2131,14 @@ mod tests {
         let second = chain.snapshot_at(20_000);
         assert_eq!(second.current_number, Some(3));
         assert_eq!(second.next_number, Some(1));
-        assert!(second.slots.iter().find(|s| s.number == 3).unwrap().is_current);
+        assert!(
+            second
+                .slots
+                .iter()
+                .find(|s| s.number == 3)
+                .unwrap()
+                .is_current
+        );
         assert!(second.slots.iter().find(|s| s.number == 1).unwrap().is_next);
     }
 
@@ -2069,7 +2159,11 @@ mod tests {
     #[test]
     fn startchain_then_stop_does_not_auto_start_from_shout_gaps() {
         let mut chain = filled();
-        chain.apply_command_at(ChainCommand::StartChain { tank: None }, "Lead".into(), 10_000);
+        chain.apply_command_at(
+            ChainCommand::StartChain { tank: None },
+            "Lead".into(),
+            10_000,
+        );
         chain.apply_heal_at(call("Clericone", 1, true), 10_000);
         chain.apply_command_at(ChainCommand::EndChain { tank: None }, "Lead".into(), 12_000);
         assert!(!chain.running);
@@ -2100,7 +2194,13 @@ mod tests {
     #[test]
     fn set_your_name_rewrites_you_and_previous_name() {
         let mut chain = ChainState::new(2.0, 10.0);
-        chain.apply_command(ChainCommand::Take { player: None, number: 1 }, "You".into());
+        chain.apply_command(
+            ChainCommand::Take {
+                player: None,
+                number: 1,
+            },
+            "You".into(),
+        );
         chain.set_your_name("Clericone".into());
         assert_eq!(chain.slots.get(&1).unwrap().player, "Clericone");
         chain.set_your_name("Clericone".into());
@@ -2136,7 +2236,11 @@ mod tests {
     fn startchain_announces_that_the_chain_is_starting() {
         let mut chain = filled();
         assert!(chain
-            .apply_command_at(ChainCommand::StartChain { tank: None }, "Lead".into(), 10_000)
+            .apply_command_at(
+                ChainCommand::StartChain { tank: None },
+                "Lead".into(),
+                10_000
+            )
             .is_none());
         let snap = chain.snapshot_at(10_000);
         assert_eq!(snap.warning.as_deref(), Some("Chain is starting."));
@@ -2172,7 +2276,11 @@ mod tests {
     fn start_and_end_iterate_on_interval_and_update_on_skip() {
         let mut chain = filled();
         assert!(chain
-            .apply_command_at(ChainCommand::StartChain { tank: None }, "Lead".into(), 10_000)
+            .apply_command_at(
+                ChainCommand::StartChain { tank: None },
+                "Lead".into(),
+                10_000
+            )
             .is_none());
         let waiting = chain.snapshot_at(10_000);
         assert!(waiting.armed);
@@ -2194,12 +2302,20 @@ mod tests {
         let you_eta = second.you_cast_in.expect("you next cycle");
         assert!((you_eta - 3.9).abs() < 0.15);
 
-        chain.apply_command_at(ChainCommand::Skip { number: Some(2) }, "Lead".into(), 12_200);
+        chain.apply_command_at(
+            ChainCommand::Skip { number: Some(2) },
+            "Lead".into(),
+            12_200,
+        );
         let skipped = chain.snapshot_at(12_200);
         assert_eq!(skipped.current_number, Some(3));
         assert_eq!(skipped.next_number, Some(1));
 
-        chain.apply_command_at(ChainCommand::Back { number: Some(2) }, "Lead".into(), 12_300);
+        chain.apply_command_at(
+            ChainCommand::Back { number: Some(2) },
+            "Lead".into(),
+            12_300,
+        );
         chain.apply_command_at(ChainCommand::EndChain { tank: None }, "Lead".into(), 12_400);
         assert!(!chain.running);
         assert_eq!(chain.slots.len(), 3);
@@ -2217,7 +2333,11 @@ mod tests {
     #[test]
     fn timing_offset_from_expected_beat() {
         let mut chain = filled();
-        chain.apply_command_at(ChainCommand::StartChain { tank: None }, "Lead".into(), 10_000);
+        chain.apply_command_at(
+            ChainCommand::StartChain { tank: None },
+            "Lead".into(),
+            10_000,
+        );
         chain.apply_heal_at(call("Clericone", 1, true), 10_000);
         chain.apply_heal_at(call("Two", 2, false), 12_250);
         let snap = chain.snapshot_at(12_250);
@@ -2236,7 +2356,11 @@ mod tests {
     #[test]
     fn startchain_waits_for_the_first_cleric_to_go() {
         let mut chain = filled();
-        chain.apply_command_at(ChainCommand::StartChain { tank: None }, "Lead".into(), 10_000);
+        chain.apply_command_at(
+            ChainCommand::StartChain { tank: None },
+            "Lead".into(),
+            10_000,
+        );
         let waiting = chain.snapshot_at(10_100);
         assert!(waiting.armed);
         assert!(!waiting.running);
@@ -2249,7 +2373,10 @@ mod tests {
         assert!(!started.armed);
         assert_eq!(started.current_number, Some(2));
         assert_eq!(started.next_number, Some(3));
-        assert_eq!(started.slots.iter().map(|s| s.number).collect::<Vec<_>>(), vec![1, 2, 3]);
+        assert_eq!(
+            started.slots.iter().map(|s| s.number).collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
         let two = started.slots.iter().find(|s| s.number == 2).unwrap();
         assert!(two.is_current);
         let three = started.slots.iter().find(|s| s.number == 3).unwrap();
@@ -2264,10 +2391,32 @@ mod tests {
     fn rampage_startchain_starts_from_the_first_letter_to_go() {
         let mut chain = ChainState::new_rampage(2.0, 10.0);
         chain.set_your_name("Clericone".into());
-        chain.apply_command(ChainCommand::Take { player: None, number: 1 }, "Clericone".into());
-        chain.apply_command(ChainCommand::Take { player: None, number: 2 }, "Two".into());
-        chain.apply_command(ChainCommand::Take { player: None, number: 3 }, "Three".into());
-        chain.apply_command_at(ChainCommand::StartChain { tank: None }, "Lead".into(), 10_000);
+        chain.apply_command(
+            ChainCommand::Take {
+                player: None,
+                number: 1,
+            },
+            "Clericone".into(),
+        );
+        chain.apply_command(
+            ChainCommand::Take {
+                player: None,
+                number: 2,
+            },
+            "Two".into(),
+        );
+        chain.apply_command(
+            ChainCommand::Take {
+                player: None,
+                number: 3,
+            },
+            "Three".into(),
+        );
+        chain.apply_command_at(
+            ChainCommand::StartChain { tank: None },
+            "Lead".into(),
+            10_000,
+        );
         let waiting = chain.snapshot_at(10_000);
         assert!(waiting.armed);
         assert!(!waiting.running);
@@ -2283,10 +2432,18 @@ mod tests {
     #[test]
     fn startchain_mid_fight_waits_for_the_next_ch() {
         let mut chain = filled();
-        chain.apply_command_at(ChainCommand::StartChain { tank: None }, "Lead".into(), 10_000);
+        chain.apply_command_at(
+            ChainCommand::StartChain { tank: None },
+            "Lead".into(),
+            10_000,
+        );
         chain.apply_heal_at(call("Clericone", 1, true), 10_000);
         assert!(chain.snapshot_at(10_100).running);
-        chain.apply_command_at(ChainCommand::StartChain { tank: None }, "Lead".into(), 15_000);
+        chain.apply_command_at(
+            ChainCommand::StartChain { tank: None },
+            "Lead".into(),
+            15_000,
+        );
         let waiting = chain.snapshot_at(15_100);
         assert!(waiting.armed);
         assert!(!waiting.running);
@@ -2301,8 +2458,18 @@ mod tests {
     #[test]
     fn split_and_tank_ranges_are_independent_rotations() {
         let mut chain = filled();
-        chain.apply_command(ChainCommand::MainTank { tank: "Mluian".into() }, "Lead".into());
-        chain.apply_command(ChainCommand::OffTank { tank: "Beefwich".into() }, "Lead".into());
+        chain.apply_command(
+            ChainCommand::MainTank {
+                tank: "Mluian".into(),
+            },
+            "Lead".into(),
+        );
+        chain.apply_command(
+            ChainCommand::OffTank {
+                tank: "Beefwich".into(),
+            },
+            "Lead".into(),
+        );
         assert!(chain
             .apply_command(ChainCommand::Split { number: 3 }, "Lead".into())
             .is_none());
@@ -2310,7 +2477,11 @@ mod tests {
         assert_eq!(chain.next_after(2), Some(1));
         assert_eq!(chain.next_after(3), Some(3));
 
-        chain.apply_command_at(ChainCommand::StartChain { tank: None }, "Lead".into(), 10_000);
+        chain.apply_command_at(
+            ChainCommand::StartChain { tank: None },
+            "Lead".into(),
+            10_000,
+        );
         chain.apply_heal_at(call("Clericone", 1, true), 10_000);
         chain.apply_heal_at(call("Three", 3, false), 10_000);
         let you = chain.snapshot_at(10_100);
@@ -2318,7 +2489,10 @@ mod tests {
         assert!(you.running);
         assert_eq!(you.current_number, Some(1));
         assert!(you.slots.iter().all(|slot| slot.number < 3));
-        assert!(you.slots.iter().all(|slot| slot.tank.as_deref() == Some("Mluian")));
+        assert!(you
+            .slots
+            .iter()
+            .all(|slot| slot.tank.as_deref() == Some("Mluian")));
 
         let ot_running = chain
             .tanks
@@ -2335,7 +2509,14 @@ mod tests {
             "Lead".into(),
             10_200,
         );
-        assert!(!chain.tanks.iter().find(|t| t.name == "Beefwich").unwrap().running);
+        assert!(
+            !chain
+                .tanks
+                .iter()
+                .find(|t| t.name == "Beefwich")
+                .unwrap()
+                .running
+        );
         assert!(chain.running);
 
         chain.apply_command(
@@ -2360,18 +2541,37 @@ mod tests {
             },
             "Lead".into(),
         );
-        chain.apply_command(ChainCommand::Take { player: None, number: 4 }, "You".into());
+        chain.apply_command(
+            ChainCommand::Take {
+                player: None,
+                number: 4,
+            },
+            "You".into(),
+        );
         let snap = chain.snapshot_at(1_000);
         assert_eq!(snap.your_tank.as_deref(), Some("Beefwich"));
         assert!(snap.slots.iter().all(|slot| slot.number >= 3));
-        assert!(snap.slots.iter().all(|slot| slot.tank.as_deref() == Some("Beefwich")));
+        assert!(snap
+            .slots
+            .iter()
+            .all(|slot| slot.tank.as_deref() == Some("Beefwich")));
     }
 
     #[test]
     fn shouting_the_wrong_tank_warns() {
         let mut chain = filled();
-        chain.apply_command(ChainCommand::MainTank { tank: "Mluian".into() }, "Lead".into());
-        chain.apply_command(ChainCommand::OffTank { tank: "Beefwich".into() }, "Lead".into());
+        chain.apply_command(
+            ChainCommand::MainTank {
+                tank: "Mluian".into(),
+            },
+            "Lead".into(),
+        );
+        chain.apply_command(
+            ChainCommand::OffTank {
+                tank: "Beefwich".into(),
+            },
+            "Lead".into(),
+        );
         chain.apply_command(ChainCommand::Split { number: 3 }, "Lead".into());
         chain.apply_heal(call("Three", 3, false));
         chain.apply_command(ChainCommand::StartChain { tank: None }, "Lead".into());
@@ -2396,7 +2596,12 @@ mod tests {
     #[test]
     fn shouting_a_target_that_is_not_the_set_tank_warns() {
         let mut chain = filled();
-        chain.apply_command(ChainCommand::MainTank { tank: "Mluian".into() }, "Lead".into());
+        chain.apply_command(
+            ChainCommand::MainTank {
+                tank: "Mluian".into(),
+            },
+            "Lead".into(),
+        );
         chain.apply_command(ChainCommand::StartChain { tank: None }, "Lead".into());
         chain.apply_heal(call("Clericone", 1, true));
         chain.apply_heal(CompleteHealCall {
@@ -2420,7 +2625,12 @@ mod tests {
     #[test]
     fn other_clerics_wrong_target_warns_without_urgency() {
         let mut chain = filled();
-        chain.apply_command(ChainCommand::MainTank { tank: "Mluian".into() }, "Lead".into());
+        chain.apply_command(
+            ChainCommand::MainTank {
+                tank: "Mluian".into(),
+            },
+            "Lead".into(),
+        );
         chain.apply_command(ChainCommand::StartChain { tank: None }, "Lead".into());
         chain.apply_heal(call("Clericone", 1, true));
         chain.apply_heal(CompleteHealCall {
@@ -2443,7 +2653,12 @@ mod tests {
     #[test]
     fn wrong_target_does_not_warn_before_the_chain_starts() {
         let mut chain = filled();
-        chain.apply_command(ChainCommand::MainTank { tank: "Mluian".into() }, "Lead".into());
+        chain.apply_command(
+            ChainCommand::MainTank {
+                tank: "Mluian".into(),
+            },
+            "Lead".into(),
+        );
         chain.apply_heal(CompleteHealCall {
             speaker: "Clericone".into(),
             is_you: true,
@@ -2460,7 +2675,12 @@ mod tests {
     fn first_join_wrong_target_does_not_warn() {
         let mut chain = ChainState::new(2.0, 10.0);
         chain.set_your_name("Clericone".into());
-        chain.apply_command(ChainCommand::MainTank { tank: "Mluian".into() }, "Lead".into());
+        chain.apply_command(
+            ChainCommand::MainTank {
+                tank: "Mluian".into(),
+            },
+            "Lead".into(),
+        );
         chain.apply_heal(CompleteHealCall {
             speaker: "Clericone".into(),
             is_you: true,
@@ -2491,7 +2711,12 @@ mod tests {
     fn rampage_wrong_target_warns() {
         let mut chain = ChainState::new_rampage(2.0, 10.0);
         chain.set_your_name("Clericone".into());
-        chain.apply_command(ChainCommand::MainTank { tank: "Mluian".into() }, "Lead".into());
+        chain.apply_command(
+            ChainCommand::MainTank {
+                tank: "Mluian".into(),
+            },
+            "Lead".into(),
+        );
         chain.apply_heal(call("Clericone", 1, true));
         chain.apply_command(ChainCommand::StartChain { tank: None }, "Lead".into());
         chain.apply_heal(call("Clericone", 1, true));
@@ -2537,7 +2762,14 @@ mod tests {
         chain.apply_heal_at(call("Three", 3, false), 12_100);
         assert!(chain.running);
         assert!((chain.interval_seconds - 2.0).abs() < 0.01);
-        chain.apply_command_at(ChainCommand::Take { player: None, number: 4 }, "You".into(), 12_400);
+        chain.apply_command_at(
+            ChainCommand::Take {
+                player: None,
+                number: 4,
+            },
+            "You".into(),
+            12_400,
+        );
         let snap = chain.snapshot_at(12_400);
         assert_eq!(snap.current_number, Some(3));
         assert_eq!(snap.next_number, Some(4));
@@ -2557,10 +2789,21 @@ mod tests {
     #[test]
     fn adding_a_late_take_does_not_jump_a_started_chain() {
         let mut chain = filled();
-        chain.apply_command_at(ChainCommand::StartChain { tank: None }, "Lead".into(), 10_000);
+        chain.apply_command_at(
+            ChainCommand::StartChain { tank: None },
+            "Lead".into(),
+            10_000,
+        );
         chain.apply_heal_at(call("Clericone", 1, true), 10_000);
         assert_eq!(chain.snapshot_at(12_100).current_number, Some(2));
-        chain.apply_command_at(ChainCommand::Take { player: None, number: 9 }, "Four".into(), 12_100);
+        chain.apply_command_at(
+            ChainCommand::Take {
+                player: None,
+                number: 9,
+            },
+            "Four".into(),
+            12_100,
+        );
         let snap = chain.snapshot_at(12_100);
         assert_eq!(snap.current_number, Some(2));
         assert_eq!(snap.next_number, Some(3));
@@ -2586,22 +2829,33 @@ mod tests {
         chain.apply_command(ChainCommand::Split { number: 9 }, "Lead".into());
         chain.apply_heal_at(call("A", 1, false), 10_000);
         chain.apply_heal_at(call("B", 2, false), 12_000);
-        chain.apply_command_at(ChainCommand::Take { player: None, number: 9 }, "You".into(), 12_500);
+        chain.apply_command_at(
+            ChainCommand::Take {
+                player: None,
+                number: 9,
+            },
+            "You".into(),
+            12_500,
+        );
         assert!(chain.running);
-        assert!(!chain
-            .tanks
-            .iter()
-            .find(|tank| tank.name == "Beefwich")
-            .unwrap()
-            .running);
+        assert!(
+            !chain
+                .tanks
+                .iter()
+                .find(|tank| tank.name == "Beefwich")
+                .unwrap()
+                .running
+        );
         chain.apply_heal_at(call("C", 10, false), 13_000);
         chain.apply_heal_at(call("D", 11, false), 15_000);
-        assert!(chain
-            .tanks
-            .iter()
-            .find(|tank| tank.name == "Beefwich")
-            .unwrap()
-            .running);
+        assert!(
+            chain
+                .tanks
+                .iter()
+                .find(|tank| tank.name == "Beefwich")
+                .unwrap()
+                .running
+        );
         let snap = chain.snapshot_at(15_000);
         assert_eq!(snap.your_tank.as_deref(), Some("Beefwich"));
         assert_eq!(snap.current_number, Some(11));

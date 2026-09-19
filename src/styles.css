@@ -228,6 +228,32 @@ button {
   animation: pulse-danger 0.9s ease-in-out 4;
 }
 
+.update-banner {
+  align-items: center;
+}
+
+.update-copy {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.update-copy small {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.update-copy small:empty {
+  display: none;
+}
+
+#update-install {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
 @keyframes pulse-danger {
   0%,
   100% {
@@ -545,7 +571,7 @@ button {
   color: var(--text);
 }
 
-input:not([type="checkbox"]):not([type="radio"]),
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
 textarea,
 select {
   width: 100%;
@@ -608,6 +634,19 @@ button.primary {
 
 .radios .check:last-child {
   margin-bottom: 6px;
+}
+
+.radios > p {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+input[type="range"] {
+  padding: 8px 0;
+  background: transparent;
+  border: 0;
+  accent-color: var(--gold);
 }
 
 .cue-option {
@@ -791,4 +830,183 @@ button.primary {
   justify-content: flex-end;
   gap: 8px;
   margin-top: 4px;
+}
+
+html:has(body.overlay),
+body.overlay {
+  --overlay-alpha: 0.85;
+  background: transparent;
+  height: 100%;
+}
+
+body.overlay #overlay-shell {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: rgba(18, 20, 27, var(--overlay-alpha));
+  border: 1px solid rgba(215, 178, 90, 0.35);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+body.overlay:not(.is-clickthrough) #overlay-shell {
+  cursor: move;
+}
+
+.overlay-chrome {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px 6px 12px;
+  border-bottom: 1px solid var(--line);
+  flex: 0 0 auto;
+  user-select: none;
+}
+
+.overlay-drag {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  cursor: move;
+}
+
+.overlay-chrome strong {
+  font: 600 13px/1 "Iowan Old Style", Palatino, Georgia, serif;
+  color: var(--gold-2);
+}
+
+.overlay-chrome #overlay-hint {
+  flex: 1;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+#overlay-close {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  padding: 2px 8px;
+  border-radius: 6px;
+  font: 700 16px/1 "Avenir Next", "Segoe UI", sans-serif;
+}
+
+#overlay-close:hover,
+#overlay-close:focus-visible {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+body.overlay.is-clickthrough #overlay-close {
+  display: none;
+}
+
+.overlay-cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  padding: 8px;
+  overflow: auto;
+  min-height: 0;
+  flex: 1;
+}
+
+@media (max-width: 420px) {
+  .overlay-cols {
+    grid-template-columns: 1fr;
+  }
+}
+
+.overlay-panel {
+  min-width: 0;
+}
+
+.overlay-panel-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: baseline;
+  margin-bottom: 6px;
+}
+
+.overlay-panel-head h2 {
+  margin: 0;
+  font: 600 13px/1 "Iowan Old Style", Palatino, Georgia, serif;
+  color: var(--gold);
+}
+
+.overlay-panel-head span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.overlay-you {
+  margin-bottom: 6px;
+  color: var(--heal);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.overlay-empty {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.overlay-slots {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.overlay-slot {
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+}
+
+.overlay-slot-head {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  font-size: 12px;
+}
+
+.overlay-slot-head .num {
+  color: var(--gold-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.overlay-slot-head .player {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.overlay-slot-flag {
+  color: var(--heal);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.overlay-slot .bar {
+  margin-top: 4px;
+  height: 4px;
+  border-radius: 99px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.overlay-slot .bar span {
+  display: block;
+  height: 100%;
+  background: var(--heal);
 }

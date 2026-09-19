@@ -21,10 +21,16 @@ pub struct AppConfig {
     pub alert_auto_take_sound: bool,
     pub alert_start_chain_sound: bool,
     pub alert_dismiss_seconds: f64,
+    pub overlay_opacity: f64,
+    pub overlay_clickthrough: bool,
     pub window_x: Option<f64>,
     pub window_y: Option<f64>,
     pub window_width: Option<f64>,
     pub window_height: Option<f64>,
+    pub overlay_x: Option<f64>,
+    pub overlay_y: Option<f64>,
+    pub overlay_width: Option<f64>,
+    pub overlay_height: Option<f64>,
 }
 
 impl Default for AppConfig {
@@ -45,16 +51,24 @@ impl Default for AppConfig {
             alert_auto_take_sound: true,
             alert_start_chain_sound: true,
             alert_dismiss_seconds: 10.0,
+            overlay_opacity: 0.85,
+            overlay_clickthrough: false,
             window_x: None,
             window_y: None,
             window_width: None,
             window_height: None,
+            overlay_x: None,
+            overlay_y: None,
+            overlay_width: None,
+            overlay_height: None,
         }
     }
 }
 
 pub const MIN_WINDOW_WIDTH: f64 = 400.0;
 pub const MIN_WINDOW_HEIGHT: f64 = 560.0;
+pub const MIN_OVERLAY_WIDTH: f64 = 240.0;
+pub const MIN_OVERLAY_HEIGHT: f64 = 200.0;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct WindowGeometry {
@@ -85,6 +99,34 @@ impl AppConfig {
         self.window_height = Some(geom.height);
     }
 
+    pub fn overlay_geometry(&self) -> Option<WindowGeometry> {
+        let width = clamp_overlay_width(self.overlay_width?)?;
+        let height = clamp_overlay_height(self.overlay_height?)?;
+        let x = finite_coord(self.overlay_x?)?;
+        let y = finite_coord(self.overlay_y?)?;
+        Some(WindowGeometry {
+            x,
+            y,
+            width,
+            height,
+        })
+    }
+
+    pub fn set_overlay_geometry(&mut self, geom: WindowGeometry) {
+        self.overlay_x = Some(geom.x);
+        self.overlay_y = Some(geom.y);
+        self.overlay_width = Some(geom.width);
+        self.overlay_height = Some(geom.height);
+    }
+
+    pub fn clamp_overlay_opacity(value: f64) -> f64 {
+        if !value.is_finite() {
+            0.85
+        } else {
+            value.clamp(0.25, 1.0)
+        }
+    }
+
     pub fn alert_dismiss_ms(&self) -> u64 {
         if !self.alert_dismiss_seconds.is_finite() || self.alert_dismiss_seconds <= 0.0 {
             0
@@ -112,6 +154,20 @@ pub fn clamp_window_height(height: f64) -> Option<f64> {
     Some(height.max(MIN_WINDOW_HEIGHT).min(10_000.0))
 }
 
+pub fn clamp_overlay_width(width: f64) -> Option<f64> {
+    if !width.is_finite() {
+        return None;
+    }
+    Some(width.max(MIN_OVERLAY_WIDTH).min(10_000.0))
+}
+
+pub fn clamp_overlay_height(height: f64) -> Option<f64> {
+    if !height.is_finite() {
+        return None;
+    }
+    Some(height.max(MIN_OVERLAY_HEIGHT).min(10_000.0))
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Rect {
     pub x: i32,
@@ -124,14 +180,20 @@ pub fn geometry_on_a_monitor(geom: WindowGeometry, scale: f64, monitors: &[Rect]
     if monitors.is_empty() {
         return true;
     }
-    let scale = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
     let window = Rect {
         x: (geom.x * scale).round() as i32,
         y: (geom.y * scale).round() as i32,
         w: (geom.width * scale).round() as i32,
         h: (geom.height * scale).round() as i32,
     };
-    monitors.iter().any(|monitor| overlap_at_least(window, *monitor, 80))
+    monitors
+        .iter()
+        .any(|monitor| overlap_at_least(window, *monitor, 80))
 }
 
 fn overlap_at_least(a: Rect, b: Rect, min: i32) -> bool {
@@ -227,6 +289,18 @@ fn parse_ini(text: &str) -> AppConfig {
                     }
                 }
             }
+            ("overlay", "opacity") => {
+                if let Ok(v) = value.parse::<f64>() {
+                    cfg.overlay_opacity = AppConfig::clamp_overlay_opacity(v);
+                }
+            }
+            ("overlay", "clickthrough") | ("overlay", "click_through") => {
+                cfg.overlay_clickthrough = parse_bool(&value)
+            }
+            ("overlay", "x") => cfg.overlay_x = parse_coord(&value),
+            ("overlay", "y") => cfg.overlay_y = parse_coord(&value),
+            ("overlay", "width") => cfg.overlay_width = parse_coord(&value),
+            ("overlay", "height") => cfg.overlay_height = parse_coord(&value),
             ("chain", "interval_seconds") => {
                 if let Ok(v) = value.parse() {
                     cfg.interval_seconds = v;
@@ -296,6 +370,33 @@ tag = {chain_tag}
         cast_time_seconds = cfg.cast_time_seconds,
         chain_tag = cfg.chain_tag,
     );
+    text.push_str(&format!(
+        r#"
+[overlay]
+opacity = {opacity}
+clickthrough = {clickthrough}
+"#,
+        opacity = AppConfig::clamp_overlay_opacity(cfg.overlay_opacity),
+        clickthrough = cfg.overlay_clickthrough,
+    ));
+    if cfg.overlay_x.is_some()
+        || cfg.overlay_y.is_some()
+        || cfg.overlay_width.is_some()
+        || cfg.overlay_height.is_some()
+    {
+        if let Some(v) = cfg.overlay_x {
+            text.push_str(&format!("x = {v:.0}\n"));
+        }
+        if let Some(v) = cfg.overlay_y {
+            text.push_str(&format!("y = {v:.0}\n"));
+        }
+        if let Some(v) = cfg.overlay_width {
+            text.push_str(&format!("width = {v:.0}\n"));
+        }
+        if let Some(v) = cfg.overlay_height {
+            text.push_str(&format!("height = {v:.0}\n"));
+        }
+    }
     if cfg.window_x.is_some()
         || cfg.window_y.is_some()
         || cfg.window_width.is_some()
@@ -392,6 +493,8 @@ mod tests {
         assert!(parsed.alert_auto_take_sound);
         assert!(parsed.alert_start_chain_sound);
         assert_eq!(parsed.alert_dismiss_seconds, 10.0);
+        assert_eq!(parsed.overlay_opacity, 0.85);
+        assert!(!parsed.overlay_clickthrough);
         assert_eq!(parsed.window_geometry(), cfg.window_geometry());
     }
 
@@ -419,6 +522,8 @@ setup_complete = false
         assert!(AppConfig::default().alert_auto_take_sound);
         assert!(AppConfig::default().alert_start_chain_sound);
         assert_eq!(AppConfig::default().alert_dismiss_seconds, 10.0);
+        assert_eq!(AppConfig::default().overlay_opacity, 0.85);
+        assert!(!AppConfig::default().overlay_clickthrough);
         assert_eq!(AppConfig::default().alert_dismiss_ms(), 10_000);
         assert!(parsed.alert_slot_taken);
         assert!(parsed.alert_wrong_target);
@@ -580,6 +685,8 @@ ch_2 = (?i)HEAL (\d+) on (\S+)
         assert!(text.contains("alert_auto_take_sound"));
         assert!(text.contains("alert_start_chain_sound"));
         assert!(text.contains("alert_dismiss_seconds"));
+        assert!(text.contains("[overlay]"));
+        assert!(text.contains("clickthrough"));
         assert!(!text.contains("[window]"));
         assert!(!text.contains("[patterns]"));
         assert!(!text.contains("ch_1"));
@@ -618,6 +725,47 @@ height = 20
         assert_eq!(clamp_window_width(12.0), Some(MIN_WINDOW_WIDTH));
         assert_eq!(clamp_window_height(20.0), Some(MIN_WINDOW_HEIGHT));
         assert!(bad.window_geometry().is_none());
+    }
+
+    #[test]
+    fn overlay_settings_round_trip() {
+        let parsed = parse_ini(
+            r#"
+[overlay]
+opacity = 0.4
+clickthrough = true
+x = 80
+y = 40
+width = 320
+height = 480
+"#,
+        );
+        assert!((parsed.overlay_opacity - 0.4).abs() < f64::EPSILON);
+        assert!(parsed.overlay_clickthrough);
+        assert_eq!(
+            parsed.overlay_geometry(),
+            Some(WindowGeometry {
+                x: 80.0,
+                y: 40.0,
+                width: 320.0,
+                height: 480.0,
+            })
+        );
+        assert_eq!(AppConfig::clamp_overlay_opacity(0.0), 0.25);
+        assert_eq!(AppConfig::clamp_overlay_opacity(3.0), 1.0);
+        let tiny = parse_ini(
+            r#"
+[overlay]
+width = 10
+height = 10
+x = 0
+y = 0
+"#,
+        );
+        assert_eq!(
+            tiny.overlay_geometry().map(|g| (g.width, g.height)),
+            Some((MIN_OVERLAY_WIDTH, MIN_OVERLAY_HEIGHT))
+        );
     }
 
     #[test]

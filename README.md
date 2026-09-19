@@ -47,7 +47,9 @@ Release artifacts from `make build` land in `src-tauri/target/release/bundle/` (
 2. Alfred validates the folder, watches `Logs` (including through a symlink), and shows the character from `eqlog_Name_Server.txt`.
 3. It tails the `eqlog_*.txt` file that is currently being written, starting at the **end** of the file, and switches if you log in another character.
 4. Switch to **CH** or **Rampage** (or pick **Cleric Chain** / **Rampage Chain** from the tray).
-5. Tray **Test log** (or **Open test log** in Settings) opens a popup to inject chat lines as if they came from the log, without being in game. Set the speaker to **YOU** or another character name, pick the channel, then send the message.
+5. Tray **Overlay** (or **Open overlay** in Settings) shows both chains in a movable always-on-top window. Drag it when click-through is off, set opacity in Settings, then turn **Click-through** on so mouse clicks go through to EverQuest. Tray **Overlay** again hides it.
+6. Tray **Test log** (or **Open test log** in Settings) opens a popup to inject chat lines as if they came from the log, without being in game. Set the speaker to **YOU** or another character name, pick the channel, then send the message.
+7. Alfred checks GitHub for a newer release on launch. A banner offers **Install and restart**. Tray or Settings **Check for updates** does the same check on demand.
 
 Logging must be on in game (`/log`).
 
@@ -171,6 +173,10 @@ interval_seconds = 2
 cast_time_seconds = 10
 tag = GG
 
+[overlay]
+opacity = 0.85
+clickthrough = false
+
 [window]
 x = 120
 y = 80
@@ -178,7 +184,7 @@ width = 460
 height = 800
 ```
 
-Alfred remembers the last on-screen position and size in that `[window]` section and restores them on the next launch. If the saved spot is no longer on a connected display, it keeps the size and lets the OS place the window.
+Alfred remembers the last on-screen position and size in that `[window]` section and restores them on the next launch. If the saved spot is no longer on a connected display, it keeps the size and lets the OS place the window. The overlay stores its own position, size, opacity, and click-through flag in `[overlay]`.
 
 Directory watching uses OS file events (FSEvents / inotify / ReadDirectoryChanges). A short size check on the active log is the fallback when those events miss a write (common with Wine / CrossOver).
 
@@ -220,6 +226,17 @@ Pushes and pull requests run **Tests** with coverage, attach `coverage/index.htm
 - Leave **version** empty to bump from [conventional commits](https://www.conventionalcommits.org/) since the last `v*` tag (`feat` → minor, `fix` → patch, `BREAKING CHANGE` / `feat!` → major).
 - Or type a semver such as `0.2.0`.
 - The notes group those commits by type (Features, Fixes, …) and the job builds macOS (Apple Silicon + Intel), Windows, and Linux installers onto a GitHub release.
+
+Alfred checks that GitHub release on launch and from **Check for updates** (Settings or the tray). If a newer version is out, a banner lets you download it, install in place, and restart. Signed updater files (`latest.json` and `.sig`) are attached to the release.
+
+Auto-update needs two GitHub Actions secrets on this repo:
+
+- `TAURI_SIGNING_PRIVATE_KEY` — contents of `src-tauri/updater.key` (gitignored). The matching public key is already in `src-tauri/tauri.conf.json`.
+- `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` — optional; leave unset if the key has no password.
+
+`make build` signs updater artifacts when that key file is present. Keep the private key backed up; if it is lost, existing installs cannot verify later updates.
+
+The updater reads `https://github.com/randy-girard/alfred-raid/releases/latest/download/latest.json`. That URL only works if the GitHub release assets are downloadable without logging in (a public repo, or a public releases mirror). A private repo will not notify other machines until those assets are public.
 
 Commit subjects should look like `feat(chain): add rampage panel` — short, no sign-off. See `.cursor/rules/commits.mdc`.
 

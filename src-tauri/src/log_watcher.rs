@@ -49,7 +49,10 @@ impl WatchStatus {
 
 pub enum WatchEvent {
     Status(WatchStatus),
-    Lines { character: Option<String>, lines: Vec<String> },
+    Lines {
+        character: Option<String>,
+        lines: Vec<String>,
+    },
 }
 
 pub struct WatcherHandle {
@@ -130,17 +133,18 @@ fn run_watcher(
     let mut last_dir_scan = Instant::now() - Duration::from_secs(10);
     let mut last_error: Option<String> = None;
 
-    let emit_status = |logs: &LogsDir, tail: &Option<LogTail>, backend: &str, last_error: &Option<String>| {
-        on_event(WatchEvent::Status(WatchStatus {
-            eq_directory: Some(eq_directory.display().to_string()),
-            logs_path: Some(logs.user_path.display().to_string()),
-            logs_canonical: logs.canonical.as_ref().map(|p| p.display().to_string()),
-            active_log: tail.as_ref().map(|t| t.path.display().to_string()),
-            character: tail.as_ref().and_then(|t| character_from_log(&t.path)),
-            backend: backend.to_string(),
-            last_error: last_error.clone(),
-        }));
-    };
+    let emit_status =
+        |logs: &LogsDir, tail: &Option<LogTail>, backend: &str, last_error: &Option<String>| {
+            on_event(WatchEvent::Status(WatchStatus {
+                eq_directory: Some(eq_directory.display().to_string()),
+                logs_path: Some(logs.user_path.display().to_string()),
+                logs_canonical: logs.canonical.as_ref().map(|p| p.display().to_string()),
+                active_log: tail.as_ref().map(|t| t.path.display().to_string()),
+                character: tail.as_ref().and_then(|t| character_from_log(&t.path)),
+                backend: backend.to_string(),
+                last_error: last_error.clone(),
+            }));
+        };
 
     while !stop.load(Ordering::SeqCst) {
         if last_resolve.elapsed() >= Duration::from_secs(2) {
@@ -327,7 +331,9 @@ pub fn discover_eq_directory() -> Option<EqDirectoryProbe> {
     discover_among(candidate_eq_paths())
 }
 
-pub(crate) fn discover_among(candidates: impl IntoIterator<Item = PathBuf>) -> Option<EqDirectoryProbe> {
+pub(crate) fn discover_among(
+    candidates: impl IntoIterator<Item = PathBuf>,
+) -> Option<EqDirectoryProbe> {
     let mut seen = HashSet::new();
     let mut best: Option<(u64, EqDirectoryProbe)> = None;
     for raw in candidates {
@@ -343,7 +349,11 @@ pub(crate) fn discover_among(candidates: impl IntoIterator<Item = PathBuf>) -> O
             continue;
         }
         let score = probe_score(&probe);
-        if best.as_ref().map(|(best_score, _)| score > *best_score).unwrap_or(true) {
+        if best
+            .as_ref()
+            .map(|(best_score, _)| score > *best_score)
+            .unwrap_or(true)
+        {
             best = Some((score, probe));
         }
     }
@@ -421,7 +431,13 @@ fn eq_relative_paths() -> &'static [&'static [&'static str]] {
             "Installed Games",
             "EverQuest",
         ],
-        &["Program Files (x86)", "Steam", "steamapps", "common", "EverQuest"],
+        &[
+            "Program Files (x86)",
+            "Steam",
+            "steamapps",
+            "common",
+            "EverQuest",
+        ],
         &["Program Files", "EverQuest"],
         &["Program Files", "Steam", "steamapps", "common", "EverQuest"],
         &[
@@ -432,9 +448,23 @@ fn eq_relative_paths() -> &'static [&'static [&'static str]] {
             "EverQuest",
         ],
         &["Sony", "EverQuest"],
-        &["Library", "Application Support", "Steam", "steamapps", "common", "EverQuest"],
+        &[
+            "Library",
+            "Application Support",
+            "Steam",
+            "steamapps",
+            "common",
+            "EverQuest",
+        ],
         &[".steam", "steam", "steamapps", "common", "EverQuest"],
-        &[".local", "share", "Steam", "steamapps", "common", "EverQuest"],
+        &[
+            ".local",
+            "share",
+            "Steam",
+            "steamapps",
+            "common",
+            "EverQuest",
+        ],
     ]
 }
 
@@ -448,7 +478,10 @@ fn search_bases() -> Vec<PathBuf> {
             &mut bases,
             home.join("Library/Application Support/CrossOver/Bottles"),
         );
-        push_bottle_drives(&mut bases, home.join("Library/Application Support/Whisky/Bottles"));
+        push_bottle_drives(
+            &mut bases,
+            home.join("Library/Application Support/Whisky/Bottles"),
+        );
         push_bottle_drives(
             &mut bases,
             home.join("Library/Application Support/com.isaacmarovitz.Whisky/Bottles"),
@@ -507,12 +540,7 @@ pub fn normalize_eq_path(raw: &str) -> String {
 }
 
 fn looks_like_eq_root(path: &Path) -> bool {
-    const MARKERS: &[&str] = &[
-        "eqgame.exe",
-        "eqclient.ini",
-        "everquest.exe",
-        "eqgame.ini",
-    ];
+    const MARKERS: &[&str] = &["eqgame.exe", "eqclient.ini", "everquest.exe", "eqgame.ini"];
     let Ok(entries) = fs::read_dir(path) else {
         return false;
     };
@@ -555,11 +583,9 @@ fn has_eq_logs(path: &Path) -> bool {
     fs::read_dir(path)
         .ok()
         .map(|entries| {
-            entries.flatten().any(|e| {
-                e.file_name()
-                    .to_str()
-                    .is_some_and(is_eq_log_name)
-            })
+            entries
+                .flatten()
+                .any(|e| e.file_name().to_str().is_some_and(is_eq_log_name))
         })
         .unwrap_or(false)
 }
@@ -737,7 +763,10 @@ mod tests {
     #[test]
     fn normalize_eq_path_strips_quotes_and_file_urls() {
         assert_eq!(normalize_eq_path("  /games/eq  "), "/games/eq");
-        assert_eq!(normalize_eq_path(r#""/games/EverQuest""#), "/games/EverQuest");
+        assert_eq!(
+            normalize_eq_path(r#""/games/EverQuest""#),
+            "/games/EverQuest"
+        );
         assert_eq!(
             normalize_eq_path("file:///Users/me/EverQuest"),
             "/Users/me/EverQuest"
@@ -768,7 +797,10 @@ mod tests {
         let ok = inspect_eq_directory(&quoted);
         assert!(ok.ok);
         assert_eq!(ok.character.as_deref(), Some("Clericone"));
-        assert!(ok.active_log.unwrap().contains("eqlog_Clericone_P1999Green.txt"));
+        assert!(ok
+            .active_log
+            .unwrap()
+            .contains("eqlog_Clericone_P1999Green.txt"));
     }
 
     fn fake_eq(tag: &str, character: &str) -> TempTree {
@@ -796,12 +828,8 @@ mod tests {
         fs::write(incomplete.path.join("eqgame.exe"), b"x").unwrap();
         let eq = fake_eq("discover-ok", "Clericone");
 
-        let found = discover_among([
-            junk.path.clone(),
-            incomplete.path.clone(),
-            eq.path.clone(),
-        ])
-        .expect("should find the EQ folder");
+        let found = discover_among([junk.path.clone(), incomplete.path.clone(), eq.path.clone()])
+            .expect("should find the EQ folder");
         assert!(found.ok);
         assert_eq!(found.character.as_deref(), Some("Clericone"));
         assert_eq!(
@@ -822,8 +850,8 @@ mod tests {
             with_char.path.canonicalize().unwrap()
         );
 
-        let found =
-            discover_among([empty.path.clone(), with_char.path.clone()]).expect("character install");
+        let found = discover_among([empty.path.clone(), with_char.path.clone()])
+            .expect("character install");
         assert_eq!(found.character.as_deref(), Some("Newtoon"));
     }
 
@@ -844,7 +872,8 @@ mod tests {
         fs::write(
             tmp.path.join("eqlog_New_P1999Green.txt"),
             "new and much longer\n",
-        ).unwrap();
+        )
+        .unwrap();
         let newest = newest_log(&tmp.path).unwrap().unwrap();
         assert_eq!(newest.file_name().unwrap(), "eqlog_New_P1999Green.txt");
         assert!(newest_log(&tmp.path.join("missing"))
@@ -888,7 +917,10 @@ mod tests {
         std::os::unix::fs::symlink(&real, eq.join("Logs")).unwrap();
         let logs = resolve_logs_dir(&eq).unwrap();
         assert_eq!(logs.user_path, eq.join("Logs"));
-        assert_eq!(logs.canonical.as_ref().unwrap(), &real.canonicalize().unwrap());
+        assert_eq!(
+            logs.canonical.as_ref().unwrap(),
+            &real.canonicalize().unwrap()
+        );
     }
 
     #[test]
@@ -898,7 +930,10 @@ mod tests {
         fs::write(&path, "[old] ignored\n").unwrap();
         let mut tail = LogTail::open_at_end(&path).unwrap();
         assert!(tail.read_new_lines().unwrap().is_empty());
-        append(&path, b"[Fri Sep 18 16:27:00 2026] You shout, 'GG 001 CH -- Mluian'\n");
+        append(
+            &path,
+            b"[Fri Sep 18 16:27:00 2026] You shout, 'GG 001 CH -- Mluian'\n",
+        );
         let lines = tail.read_new_lines().unwrap();
         assert_eq!(lines.len(), 1);
         assert!(lines[0].contains("GG 001 CH"));

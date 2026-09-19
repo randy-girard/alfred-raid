@@ -33,7 +33,11 @@ pub fn apply_lines(
                 message,
                 rampage: is_rampage,
             } => {
-                let target = if is_rampage { &mut *rampage } else { &mut *chain };
+                let target = if is_rampage {
+                    &mut *rampage
+                } else {
+                    &mut *chain
+                };
                 let kind = if is_rampage { "RCH" } else { "CH" };
                 target.set_warning(format!(
                     "{speaker} sent a {kind} macro Alfred could not read: {message}"
@@ -198,11 +202,7 @@ mod tests {
     #[test]
     fn malformed_macro_sets_warning_and_valid_heal_clears_it() {
         let mut chain = run(&[&ts("Curaja shouts, 'GG CH -- Wreckognize'")]);
-        assert!(chain
-            .warning
-            .as_deref()
-            .unwrap()
-            .contains("could not read"));
+        assert!(chain.warning.as_deref().unwrap().contains("could not read"));
         let parser = Parser::new();
         apply_ch(
             &parser,
@@ -350,10 +350,16 @@ mod tests {
         assert!(!chain.running);
         assert!(chain.snapshot().armed);
         let snap = chain.snapshot();
-        assert!(snap.tanks.iter().any(|tank| tank.name == "Beefwich" && tank.armed));
+        assert!(snap
+            .tanks
+            .iter()
+            .any(|tank| tank.name == "Beefwich" && tank.armed));
         assert_eq!(snap.your_tank.as_deref(), Some("Mluian"));
         assert!(snap.slots.iter().all(|slot| slot.number < 9));
-        assert!(snap.slots.iter().all(|slot| slot.tank.as_deref() == Some("Mluian")));
+        assert!(snap
+            .slots
+            .iter()
+            .all(|slot| slot.tank.as_deref() == Some("Mluian")));
     }
 
     #[test]

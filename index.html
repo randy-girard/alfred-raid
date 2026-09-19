@@ -34,6 +34,16 @@
       </header>
 
       <div id="alerts" class="alerts" hidden></div>
+      <div id="update-alert" class="alerts" hidden>
+        <div class="banner warn dismissable update-banner" role="status">
+          <div class="update-copy">
+            <span id="update-message"></span>
+            <small id="update-notes"></small>
+          </div>
+          <button id="update-install" type="button">Install and restart</button>
+          <button id="update-later" type="button" class="banner-dismiss" aria-label="Later">×</button>
+        </div>
+      </div>
 
       <section id="view-chain" class="view" data-view="chain">
         <div class="meta">
@@ -207,11 +217,31 @@
           </label>
         </div>
 
+        <fieldset class="radios">
+          <legend>Overlay</legend>
+          <p>Always-on-top CH and rampage. Turn click-through off in Settings to move or resize it.</p>
+          <label class="field">
+            <span>Opacity</span>
+            <input id="overlay-opacity" type="range" min="0.25" max="1" step="0.05" />
+          </label>
+          <label class="check">
+            <input id="overlay-clickthrough" type="checkbox" />
+            <span>Click-through (clicks pass through to the game)</span>
+          </label>
+        </fieldset>
+
         <p id="save-status" class="save-status"></p>
 
+        <button id="open-overlay" type="button">Open overlay</button>
         <button id="open-tester" type="button">Open test log</button>
+        <button id="check-updates" type="button">Check for updates</button>
+        <p id="update-status" class="save-status"></p>
 
         <dl class="facts">
+          <div>
+            <dt>Version</dt>
+            <dd id="app-version">—</dd>
+          </div>
           <div>
             <dt>Character</dt>
             <dd id="settings-character">—</dd>

@@ -1,18 +1,23 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main and test log windows",
-  "windows": ["main", "tester"],
+  "description": "Capability for the main, overlay, and test log windows",
+  "windows": ["main", "tester", "overlay"],
   "permissions": [
     "core:default",
     "core:window:allow-show",
     "core:window:allow-hide",
+    "core:window:allow-unminimize",
     "core:window:allow-set-focus",
     "core:window:allow-set-always-on-top",
+    "core:window:allow-set-ignore-cursor-events",
+    "core:window:allow-start-dragging",
     "core:webview:allow-create-webview-window",
     "core:tray:default",
     "core:menu:default",
     "dialog:default",
-    "opener:default"
+    "opener:default",
+    "updater:default",
+    "process:default"
   ]
 }

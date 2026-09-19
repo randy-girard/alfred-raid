@@ -437,6 +437,83 @@ export function slotClassName(slot: SlotSnapshot): string {
     .join(" ");
 }
 
+export function clampOverlayOpacity(value: number): number {
+  if (!Number.isFinite(value)) return 0.85;
+  return Math.min(1, Math.max(0.25, value));
+}
+
+export function overlayPanelHtml(
+  live: ChainSnapshot | null,
+  title: string,
+): string {
+  const state = chainStateLabel({
+    running: live?.running ?? false,
+    armed: live?.armed,
+  });
+  const interval = live ? `${live.intervalSeconds.toFixed(1)}s` : "—";
+  const eta = live?.running ? live.youCastIn : live?.youAreNextIn;
+  const showYou = shouldShowYouBanner({
+    running: live?.running ?? false,
+    youCastIn: live?.youCastIn,
+    youAreNextIn: live?.youAreNextIn,
+  });
+  const youLine = showYou
+    ? `<div class="overlay-you">Cast in ${(eta ?? 0).toFixed(1)}s</div>`
+    : "";
+  const slots =
+    !live || live.slots.length === 0
+      ? `<p class="overlay-empty">Waiting</p>`
+      : live.slots
+          .map((slot) => {
+            const width = Math.round(slot.progress * 1000) / 10;
+            const next = slot.isNext ? " Next" : "";
+            return `<article class="${slotClassName(slot)} overlay-slot">
+  <div class="overlay-slot-head">
+    <span class="num">${formatSlot(slot.number, live.slotFormat)}</span>
+    <span class="player">${escapeHtml(slot.player)}</span>
+    <span class="overlay-slot-flag">${next}</span>
+  </div>
+  <div class="bar"><span style="width:${width}%"></span></div>
+</article>`;
+          })
+          .join("");
+  return `<section class="overlay-panel">
+  <header class="overlay-panel-head">
+    <h2>${escapeHtml(title)}</h2>
+    <span>${escapeHtml(state)} · ${escapeHtml(interval)}</span>
+  </header>
+  ${youLine}
+  <div class="overlay-slots">${slots}</div>
+</section>`;
+}
+
+export function updateAvailableMessage(opts: {
+  version: string;
+  currentVersion: string;
+}): string {
+  return `Alfred ${opts.version} is available. You have ${opts.currentVersion}.`;
+}
+
+export function updateUpToDateMessage(currentVersion: string): string {
+  return `You're on the latest version (${currentVersion}).`;
+}
+
+export function updateProgressLabel(downloaded: number, contentLength: number): string {
+  if (!Number.isFinite(downloaded) || downloaded < 0) downloaded = 0;
+  if (!Number.isFinite(contentLength) || contentLength <= 0) {
+    return "Downloading update…";
+  }
+  const pct = Math.min(100, Math.max(0, Math.round((downloaded / contentLength) * 100)));
+  return `Downloading update… ${pct}%`;
+}
+
+export function updateNotesPreview(notes: string | null | undefined, max = 240): string {
+  const text = (notes ?? "").replace(/\s+/g, " ").trim();
+  if (!text) return "";
+  if (text.length <= max) return text;
+  return `${text.slice(0, max).trimEnd()}…`;
+}
+
 export function watchStatusLabel(watch: WatchStatus | null): { kind: "ok" | "warn"; text: string } {
   if (!watch || watch.backend === "idle") {
     return {

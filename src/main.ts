@@ -1,7 +1,11 @@
 import "./no-context-menu";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getVersion } from "@tauri-apps/api/app";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
+import { check, type Update } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
 import {
   escapeHtml,
   formatOffset,
@@ -29,6 +33,10 @@ import {
   eqDirStatusText,
   slotClassName,
   watchStatusLabel,
+  updateAvailableMessage,
+  updateUpToDateMessage,
+  updateProgressLabel,
+  updateNotesPreview,
   CHAIN_COMMANDS,
   RAMPAGE_COMMANDS,
   type ChainSnapshot,
@@ -74,6 +82,8 @@ type AppConfig = {
   alertAutoTakeSound: boolean;
   alertStartChainSound: boolean;
   alertDismissSeconds: number;
+  overlayOpacity: number;
+  overlayClickthrough: boolean;
 };
 
 let raid: RaidSnapshot | null = null;
@@ -121,6 +131,12 @@ let setupEqTimer: ReturnType<typeof setTimeout> | null = null;
 let settingsTimer: ReturnType<typeof setTimeout> | null = null;
 let setupSteps: SetupStep[] = [];
 let setupIndex = 0;
+let appVersion = "";
+let pendingUpdate: Update | null = null;
+let updateDismissedVersion: string | null = null;
+let updateInstalling = false;
+let updateProgress: { downloaded: number; contentLength: number } | null = null;
+let updateError: string | null = null;
 
 const EQ_DIR_HINT =
   "On first launch Alfred looks in common EQ, Steam, Wine, and CrossOver folders. Paste or browse if it missed yours.";
@@ -445,6 +461,9 @@ function fillSettings(cfg: AppConfig) {
   ($("alert-start-chain-sound") as HTMLInputElement).checked = cfg.alertStartChainSound;
   const dismiss = $("alert-dismiss-seconds") as HTMLInputElement;
   if (active !== dismiss) dismiss.value = String(cfg.alertDismissSeconds);
+  const opacity = $("overlay-opacity") as HTMLInputElement;
+  if (active !== opacity) opacity.value = String(cfg.overlayOpacity);
+  ($("overlay-clickthrough") as HTMLInputElement).checked = cfg.overlayClickthrough;
 }
 
 function optionalNumber(id: string, min: number): number | undefined {
@@ -469,6 +488,8 @@ function readSettingsPatch(): Record<string, unknown> {
     alertAutoTakeSound: ($("alert-auto-take-sound") as HTMLInputElement).checked,
     alertStartChainSound: ($("alert-start-chain-sound") as HTMLInputElement).checked,
     alertDismissSeconds: optionalNumber("alert-dismiss-seconds", 0),
+    overlayOpacity: optionalNumber("overlay-opacity", 0.25),
+    overlayClickthrough: ($("overlay-clickthrough") as HTMLInputElement).checked,
   };
 }
 
@@ -785,11 +806,144 @@ function maybeChime(eta: number, kind: "chain" | "rampage") {
   speechSynthesis.speak(utterance);
 }
 
+function renderUpdateAlert() {
+  const host = $("update-alert");
+  const install = $("update-install") as HTMLButtonElement;
+  const later = $("update-later") as HTMLButtonElement;
+  if (!pendingUpdate) {
+    host.hidden = true;
+    return;
+  }
+  if (
+    updateDismissedVersion === pendingUpdate.version &&
+    !updateInstalling &&
+    !updateError
+  ) {
+    host.hidden = true;
+    return;
+  }
+  host.hidden = false;
+  if (updateInstalling) {
+    $("update-message").textContent = updateProgress
+      ? updateProgressLabel(updateProgress.downloaded, updateProgress.contentLength)
+      : "Downloading update…";
+    $("update-notes").textContent = "";
+  } else if (updateError) {
+    $("update-message").textContent = updateError;
+    $("update-notes").textContent = updateAvailableMessage({
+      version: pendingUpdate.version,
+      currentVersion: pendingUpdate.currentVersion,
+    });
+  } else {
+    $("update-message").textContent = updateAvailableMessage({
+      version: pendingUpdate.version,
+      currentVersion: pendingUpdate.currentVersion,
+    });
+    $("update-notes").textContent = updateNotesPreview(pendingUpdate.body);
+  }
+  install.disabled = updateInstalling;
+  install.textContent = updateInstalling
+    ? "Installing…"
+    : updateError
+      ? "Retry install"
+      : "Install and restart";
+  later.hidden = updateInstalling;
+}
+
+async function showMainWindow() {
+  const window = getCurrentWindow();
+  await window.show();
+  await window.unminimize();
+  await window.setFocus();
+}
+
+async function checkForUpdates(opts: { quiet: boolean }) {
+  if (updateInstalling) return;
+  updateError = null;
+  if (!opts.quiet) {
+    $("update-status").textContent = "Checking for updates…";
+    setView("settings");
+    await showMainWindow();
+  }
+  try {
+    const update = await check();
+    if (!update) {
+      pendingUpdate = null;
+      renderUpdateAlert();
+      if (!opts.quiet) {
+        $("update-status").textContent = updateUpToDateMessage(appVersion);
+      }
+      return;
+    }
+    pendingUpdate = update;
+    if (updateDismissedVersion === update.version && opts.quiet) {
+      renderUpdateAlert();
+      return;
+    }
+    updateDismissedVersion = null;
+    renderUpdateAlert();
+    if (!opts.quiet) {
+      $("update-status").textContent = updateAvailableMessage({
+        version: update.version,
+        currentVersion: update.currentVersion,
+      });
+    }
+    await showMainWindow();
+  } catch (err) {
+    pendingUpdate = null;
+    renderUpdateAlert();
+    if (!opts.quiet) {
+      $("update-status").textContent = String(err);
+    }
+  }
+}
+
+async function installPendingUpdate() {
+  if (!pendingUpdate || updateInstalling) return;
+  updateInstalling = true;
+  updateError = null;
+  updateProgress = { downloaded: 0, contentLength: 0 };
+  renderUpdateAlert();
+  $("update-status").textContent = "Downloading update…";
+  try {
+    let downloaded = 0;
+    let contentLength = 0;
+    await pendingUpdate.downloadAndInstall((event) => {
+      if (event.event === "Started") {
+        contentLength = event.data.contentLength ?? 0;
+        downloaded = 0;
+      } else if (event.event === "Progress") {
+        downloaded += event.data.chunkLength;
+      }
+      updateProgress = { downloaded, contentLength };
+      renderUpdateAlert();
+      $("update-status").textContent = updateProgressLabel(downloaded, contentLength);
+    });
+    $("update-status").textContent = "Restarting…";
+    try {
+      await relaunch();
+    } catch {
+      /* Windows may already be exiting into the installer */
+    }
+  } catch (err) {
+    updateInstalling = false;
+    updateError = String(err);
+    renderUpdateAlert();
+    $("update-status").textContent = String(err);
+  }
+}
+
 async function loadInitial() {
   config = await invoke<AppConfig>("get_config");
   raid = await invoke<RaidSnapshot>("get_snapshot");
   watch = await invoke<WatchStatus>("get_watch_status");
   $("config-path").textContent = await invoke<string>("get_config_path");
+  try {
+    appVersion = await getVersion();
+  } catch {
+    appVersion = "";
+  }
+  $("app-version").textContent = appVersion || "—";
   fillSettings(config);
   renderStatus();
   renderChain();
@@ -873,22 +1027,37 @@ window.addEventListener("DOMContentLoaded", () => {
   $("always-on-top").addEventListener("change", () => {
     void saveSettingsFromForm();
   });
-  for (const id of ["alert-slot-taken", "alert-wrong-target", "alert-auto-take-sound", "alert-start-chain-sound"]) {
+  for (const id of ["alert-slot-taken", "alert-wrong-target", "alert-auto-take-sound", "alert-start-chain-sound", "overlay-clickthrough"]) {
     $(id).addEventListener("change", () => {
       void saveSettingsFromForm();
     });
   }
+  $("open-overlay").addEventListener("click", () => {
+    void invoke("open_overlay").catch((err) => {
+      $("save-status").textContent = String(err);
+    });
+  });
   $("open-tester").addEventListener("click", () => {
     void invoke("open_tester").catch((err) => {
       $("save-status").textContent = String(err);
     });
+  });
+  $("check-updates").addEventListener("click", () => {
+    void checkForUpdates({ quiet: false });
+  });
+  $("update-install").addEventListener("click", () => {
+    void installPendingUpdate();
+  });
+  $("update-later").addEventListener("click", () => {
+    if (pendingUpdate) updateDismissedVersion = pendingUpdate.version;
+    renderUpdateAlert();
   });
   document.querySelectorAll<HTMLInputElement>('input[name="alert-mode"]').forEach((input) => {
     input.addEventListener("change", () => {
       void saveSettingsFromForm();
     });
   });
-  for (const id of ["sound-lead", "interval-seconds", "cast-time", "chain-tag", "alert-dismiss-seconds"]) {
+  for (const id of ["sound-lead", "interval-seconds", "cast-time", "chain-tag", "alert-dismiss-seconds", "overlay-opacity"]) {
     const input = $(id);
     input.addEventListener("input", () => scheduleSaveSettings());
     input.addEventListener("change", () => {
@@ -934,6 +1103,10 @@ window.addEventListener("DOMContentLoaded", () => {
     await listen<string>("open-view", (event) => {
       if (isView(event.payload)) setView(event.payload);
     });
+    await listen("check-updates", () => {
+      void checkForUpdates({ quiet: false });
+    });
+    void checkForUpdates({ quiet: true });
   })();
 
   const tick = () => {
