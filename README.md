@@ -133,7 +133,7 @@ If someone claims a number that is already taken, Alfred leaves the occupant in 
 
 `!take` with no number assigns the next free CH slot. Every Alfred that sees that chat line assigns the same number and shows it on every tab. Only the person who got the slot hears it spoken. Turn the voice off in Settings. `!rtake` with no letter does the same for rampage.
 
-If a tank is set, the chain is running, and someone already on the chain CHs a different target, Alfred shows a warning and speaks **Wrong target** to that user. Both alerts appear on every tab. Turn each one on or off in Settings.
+If a tank is set, the chain is running, and someone already on the chain CHs a different target, Alfred names who they CHed versus the tank and speaks **Wrong target** to that user. Both alerts appear on every tab. Turn each one on or off in Settings.
 
 In Settings, pick a next-up voice, metronome, or **None**. Next-up says **GO SOON** when there is still time, or **GO NOW** at 0. Sound and metronome cannot both be on. Skipped numbers are not spoken.
 

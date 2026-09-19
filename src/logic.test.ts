@@ -354,7 +354,7 @@ describe("helpers", () => {
       enabled: true,
       kind: "wrongTarget" as const,
       urgent: true,
-      warning: "001 is on Mluian, but the macro is for Portlia.",
+      warning: "You CHed Portlia instead of Mluian.",
       lastSpoken: null as string | null,
     };
     expect(shouldSpeakWrongTarget(base)).toBe(true);

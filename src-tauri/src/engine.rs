@@ -367,11 +367,10 @@ mod tests {
             &ts("Leadcleric tells the guild, '!startchain'"),
             &ts("You shout, 'GG 001 CH -- Portlia'"),
         ]);
-        assert!(chain
-            .warning
-            .as_deref()
-            .unwrap()
-            .contains("macro is for Portlia"));
+        assert_eq!(
+            chain.warning.as_deref(),
+            Some("You CHed Portlia instead of Mluian.")
+        );
         assert!(chain.warning_urgent);
         assert_eq!(chain.slots.get(&1).unwrap().player, "Clericone");
     }

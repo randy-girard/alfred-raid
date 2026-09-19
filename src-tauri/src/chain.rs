@@ -266,7 +266,7 @@ impl ChainState {
         }
         self.record_actual(call.number, now);
         if already_on && was_running {
-            if let Some(msg) = self.target_mismatch(call.number, &target_name) {
+            if let Some(msg) = self.target_mismatch(call.number, &target_name, is_you) {
                 self.set_warning_at(msg, now, is_you, WarningKind::WrongTarget);
                 return;
             }
@@ -1403,7 +1403,7 @@ impl ChainState {
         }
     }
 
-    fn target_mismatch(&self, number: u32, target: &str) -> Option<String> {
+    fn target_mismatch(&self, number: u32, target: &str, is_you: bool) -> Option<String> {
         if target.is_empty() {
             return None;
         }
@@ -1418,11 +1418,17 @@ impl ChainState {
         if self.parse_tank_key(target).as_ref() == Some(&slot_key) {
             return None;
         }
-        Some(format!(
-            "{} is on {}, but the macro is for {target}.",
-            self.fmt_slot(number),
-            self.display_name(&slot_key)
-        ))
+        let tank = self.display_name(&slot_key);
+        Some(if is_you {
+            format!("You CHed {target} instead of {tank}.")
+        } else {
+            let player = self
+                .slots
+                .get(&number)
+                .map(|slot| slot.player.as_str())
+                .unwrap_or("They");
+            format!("{player} CHed {target} instead of {tank}.")
+        })
     }
 }
 
@@ -2060,11 +2066,10 @@ mod tests {
             tag: Some("GG".into()),
             raw: "GG 001 CH -- Beefwich".into(),
         });
-        assert!(chain
-            .warning
-            .as_deref()
-            .unwrap()
-            .contains("001 is on Mluian"));
+        assert_eq!(
+            chain.warning.as_deref(),
+            Some("You CHed Beefwich instead of Mluian.")
+        );
         assert!(chain.warning_urgent);
         assert_eq!(chain.warning_kind, WarningKind::WrongTarget);
         assert_eq!(chain.slots.get(&1).unwrap().player, "Clericone");
@@ -2083,11 +2088,10 @@ mod tests {
             tag: Some("GG".into()),
             raw: "GG 001 CH -- a goblin".into(),
         });
-        assert!(chain
-            .warning
-            .as_deref()
-            .unwrap()
-            .contains("macro is for a goblin"));
+        assert_eq!(
+            chain.warning.as_deref(),
+            Some("You CHed a goblin instead of Mluian.")
+        );
         assert!(chain.warning_urgent);
         assert_eq!(chain.warning_kind, WarningKind::WrongTarget);
         chain.apply_heal(call("Clericone", 1, true));
@@ -2107,11 +2111,10 @@ mod tests {
             tag: Some("GG".into()),
             raw: "GG 002 CH -- an orc".into(),
         });
-        assert!(chain
-            .warning
-            .as_deref()
-            .unwrap()
-            .contains("macro is for an orc"));
+        assert_eq!(
+            chain.warning.as_deref(),
+            Some("Two CHed an orc instead of Mluian.")
+        );
         assert!(!chain.warning_urgent);
         assert_eq!(chain.warning_kind, WarningKind::WrongTarget);
         assert_eq!(chain.slots.get(&2).unwrap().player, "Two");
@@ -2179,11 +2182,10 @@ mod tests {
             tag: Some("GG".into()),
             raw: "GG AAA RCH -- Beefwich".into(),
         });
-        assert!(chain
-            .warning
-            .as_deref()
-            .unwrap()
-            .contains("AAA is on Mluian"));
+        assert_eq!(
+            chain.warning.as_deref(),
+            Some("You CHed Beefwich instead of Mluian.")
+        );
         assert!(chain.warning_urgent);
         assert_eq!(chain.warning_kind, WarningKind::WrongTarget);
     }
