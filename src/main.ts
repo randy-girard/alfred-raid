@@ -367,7 +367,7 @@ function renderAlerts() {
       maybeClaimAlert(item.warning, item.urgent, item.kind);
     }
     maybeWrongTargetSpeech(item.warning, item.warningKind, item.urgent, item.kind);
-    maybeAutoTakeSpeech(item.warningSpeech, item.warningKind, item.kind);
+    maybeAutoTakeSpeech(item.warningSpeech, item.warningKind, item.urgent, item.kind);
   }
 }
 
@@ -644,12 +644,14 @@ function maybeWrongTargetSpeech(
 function maybeAutoTakeSpeech(
   speech: string | null,
   kind: ChainSnapshot["warningKind"],
+  urgent: boolean,
   source: "chain" | "rampage",
 ) {
   if (
     !shouldSpeakAutoTake({
       enabled: config?.alertAutoTakeSound ?? true,
       kind,
+      urgent,
       speech,
       lastSpoken: lastSpokenAutoTake[source],
     })

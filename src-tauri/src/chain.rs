@@ -533,25 +533,26 @@ impl ChainState {
     ) {
         let slot = self.fmt_slot(number);
         let spoken = self.spoken_slot(number);
-        let (banner, speech) = if already {
+        let banner = if already {
             if is_you {
-                (
-                    format!("You already have {slot}."),
-                    format!("You already have {spoken}"),
-                )
+                format!("You already have {slot}.")
             } else {
-                (
-                    format!("{player} already has {slot}."),
-                    format!("{player} already has {spoken}"),
-                )
+                format!("{player} already has {slot}.")
             }
         } else if is_you {
-            (format!("You got {slot}."), format!("You got {spoken}"))
+            format!("You got {slot}.")
         } else {
-            (format!("{player} got {slot}."), format!("{player} got {spoken}"))
+            format!("{player} got {slot}.")
         };
         self.set_warning_at(banner, now, is_you, WarningKind::AutoTake);
-        self.warning_speech = Some(speech);
+        if is_you {
+            let speech = if already {
+                format!("You already have {spoken}")
+            } else {
+                format!("You got {spoken}")
+            };
+            self.warning_speech = Some(speech);
+        }
     }
 
     fn same_player(&self, a: &str, b: &str) -> bool {
@@ -1612,7 +1613,7 @@ mod tests {
         chain.apply_command(ChainCommand::TakeNext { player: None }, "Two".into());
         assert_eq!(chain.slots.get(&2).unwrap().player, "Two");
         assert_eq!(chain.warning.as_deref(), Some("Two got 002."));
-        assert_eq!(chain.warning_speech.as_deref(), Some("Two got 2"));
+        assert_eq!(chain.warning_speech, None);
         assert!(!chain.warning_urgent);
 
         chain.apply_command(ChainCommand::Take { player: None, number: 4 }, "Three".into());
@@ -1635,7 +1636,7 @@ mod tests {
         assert_eq!(chain.slots.get(&1).unwrap().player, "Clericone");
         assert_eq!(chain.slots.get(&2).unwrap().player, "Two");
         assert_eq!(chain.warning.as_deref(), Some("Two got BBB."));
-        assert_eq!(chain.warning_speech.as_deref(), Some("Two got BBB"));
+        assert_eq!(chain.warning_speech, None);
     }
 
     #[test]

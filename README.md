@@ -131,7 +131,7 @@ Each card shows a **Next** bar until that cleric should CH again. While the chai
 
 If someone claims a number that is already taken, Alfred leaves the occupant in place and shows a warning to the person who tried to take it. That person is not added to the chain.
 
-`!take` with no number assigns the next free CH slot. Every Alfred that sees that chat line assigns the same number, shows it on every tab, and speaks it. Turn the voice off in Settings. `!rtake` with no letter does the same for rampage.
+`!take` with no number assigns the next free CH slot. Every Alfred that sees that chat line assigns the same number and shows it on every tab. Only the person who got the slot hears it spoken. Turn the voice off in Settings. `!rtake` with no letter does the same for rampage.
 
 If a tank is set, the chain is running, and someone already on the chain CHs a different target, Alfred shows a warning and speaks **Wrong target** to that user. Both alerts appear on every tab. Turn each one on or off in Settings.
 

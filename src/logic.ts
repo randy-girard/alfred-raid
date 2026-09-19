@@ -311,10 +311,13 @@ export function isAlertEnabled(opts: {
 export function shouldSpeakAutoTake(opts: {
   enabled: boolean;
   kind: WarningKind | null | undefined;
+  urgent: boolean;
   speech: string | null | undefined;
   lastSpoken: string | null;
 }): boolean {
-  if (!opts.enabled || opts.kind !== "autoTake" || !opts.speech) return false;
+  if (!opts.enabled || opts.kind !== "autoTake" || !opts.urgent || !opts.speech) {
+    return false;
+  }
   return opts.lastSpoken !== opts.speech;
 }
 

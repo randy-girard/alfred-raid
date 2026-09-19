@@ -364,16 +364,18 @@ describe("helpers", () => {
     expect(shouldSpeakWrongTarget({ ...base, kind: "slotTaken" })).toBe(false);
   });
 
-  it("speaks auto-take once until the assignment changes", () => {
+  it("speaks auto-take only to the person who got the number", () => {
     const base = {
       enabled: true,
       kind: "autoTake" as const,
+      urgent: true,
       speech: "You got 3",
       lastSpoken: null as string | null,
     };
     expect(shouldSpeakAutoTake(base)).toBe(true);
     expect(shouldSpeakAutoTake({ ...base, lastSpoken: base.speech })).toBe(false);
     expect(shouldSpeakAutoTake({ ...base, enabled: false })).toBe(false);
+    expect(shouldSpeakAutoTake({ ...base, urgent: false })).toBe(false);
     expect(shouldSpeakAutoTake({ ...base, kind: "wrongTarget" })).toBe(false);
   });
 
