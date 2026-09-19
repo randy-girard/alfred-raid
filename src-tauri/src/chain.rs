@@ -265,9 +265,13 @@ impl ChainState {
             self.reanchor(key.clone(), call.number, now, 0);
         } else if !was_running {
             if let Some(seconds) = self.infer_interval_for(&key) {
-                self.apply_inferred_interval(&key, seconds);
-                self.reanchor(key.clone(), call.number, now, 0);
-                self.set_shout_sync(&key, true);
+                if self.looks_like_timed_chain(&key, seconds) {
+                    self.apply_inferred_interval(&key, seconds);
+                    self.reanchor(key.clone(), call.number, now, 0);
+                    self.set_shout_sync(&key, true);
+                } else {
+                    self.set_clock_current(key, Some(call.number));
+                }
             } else {
                 self.set_clock_current(key, Some(call.number));
             }
@@ -788,7 +792,6 @@ impl ChainState {
         if self.skipped.contains(&number) {
             return None;
         }
-        let key = self.tank_key_for(number);
         if let Some(beat) = beat {
             if beat.rotation.len() <= 1 {
                 let slot = self.slots.get(&number)?;
@@ -808,15 +811,7 @@ impl ChainState {
             let remaining = remaining_until_slot(number, beat, now, 1.0).0;
             return Some(remaining);
         }
-        let current = self.clock_current(&key)?;
-        let next = self.next_after_in(&key, current)?;
-        if next != number {
-            return None;
-        }
-        let current_slot = self.slots.get(&current)?;
-        let shouted = current_slot.last_shout_ms?;
-        let elapsed = now.saturating_sub(shouted) as f64 / 1000.0;
-        Some((self.interval_for(&key) - elapsed).max(0.0))
+        None
     }
 
     fn your_slot_number(&self) -> Option<u32> {
@@ -997,6 +992,10 @@ impl ChainState {
         }
         gaps.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         Some(round_interval(gaps[gaps.len() / 2]))
+    }
+
+    fn looks_like_timed_chain(&self, key: &TankKey, seconds: f64) -> bool {
+        seconds <= self.interval_for(key) + 2.0
     }
 
     fn apply_inferred_interval(&mut self, key: &TankKey, seconds: f64) {
@@ -1963,15 +1962,52 @@ mod tests {
     }
 
     #[test]
-    fn you_are_next_counts_down_from_the_last_shout() {
+    fn last_ch_without_start_marks_current_and_next() {
         let mut chain = filled();
         chain.apply_heal_at(call("Three", 3, false), 1_000);
         let snap = chain.snapshot_at(1_500);
+        assert!(!snap.running);
+        assert_eq!(snap.current_number, Some(3));
         assert_eq!(snap.next_number, Some(1));
-        let eta = snap.you_are_next_in.expect("you are next");
-        assert!((eta - 1.5).abs() < 0.05);
-        let later = chain.snapshot_at(6_000);
-        assert_eq!(later.you_are_next_in, Some(0.0));
+        assert_eq!(snap.you_are_next_in, None);
+        let you = snap.slots.iter().find(|s| s.number == 1).unwrap();
+        assert!(you.is_next);
+        let three = snap.slots.iter().find(|s| s.number == 3).unwrap();
+        assert!(three.is_current);
+    }
+
+    #[test]
+    fn hp_chain_follows_the_last_ch_without_starting_the_clock() {
+        let mut chain = filled();
+        chain.apply_heal_at(call("Two", 2, false), 10_000);
+        assert!(!chain.running);
+        assert_eq!(chain.interval_seconds, 2.0);
+        let first = chain.snapshot_at(10_000);
+        assert_eq!(first.current_number, Some(2));
+        assert_eq!(first.next_number, Some(3));
+        assert!(first.slots.iter().find(|s| s.number == 2).unwrap().is_current);
+        assert!(first.slots.iter().find(|s| s.number == 3).unwrap().is_next);
+
+        chain.apply_heal_at(call("Three", 3, false), 20_000);
+        assert!(!chain.running);
+        assert_eq!(chain.interval_seconds, 2.0);
+        let second = chain.snapshot_at(20_000);
+        assert_eq!(second.current_number, Some(3));
+        assert_eq!(second.next_number, Some(1));
+        assert!(second.slots.iter().find(|s| s.number == 3).unwrap().is_current);
+        assert!(second.slots.iter().find(|s| s.number == 1).unwrap().is_next);
+    }
+
+    #[test]
+    fn short_shout_gaps_still_start_a_late_join_clock() {
+        let mut chain = filled();
+        chain.apply_heal_at(call("Two", 2, false), 10_000);
+        chain.apply_heal_at(call("Three", 3, false), 12_100);
+        assert!(chain.running);
+        assert!((chain.interval_seconds - 2.0).abs() < 0.01);
+        let snap = chain.snapshot_at(12_100);
+        assert_eq!(snap.current_number, Some(3));
+        assert_eq!(snap.next_number, Some(1));
     }
 
     #[test]

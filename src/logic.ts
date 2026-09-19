@@ -642,24 +642,11 @@ function idleSnapshot(snapshot: ChainSnapshot, now: number): ChainSnapshot {
       progress: cast > 0 ? Math.min(1, remaining / cast) : 0,
     };
   });
-  let youAreNextIn = snapshot.youAreNextIn;
-  if (snapshot.nextNumber != null && snapshot.currentNumber != null) {
-    const current = snapshot.slots.find((s) => s.number === snapshot.currentNumber);
-    const next = snapshot.slots.find((s) => s.number === snapshot.nextNumber);
-    if (current?.lastShoutMs && next?.isYou) {
-      youAreNextIn = Math.max(
-        0,
-        snapshot.intervalSeconds - (now - current.lastShoutMs) / 1000,
-      );
-    } else {
-      youAreNextIn = null;
-    }
-  }
   return {
     ...snapshot,
     slots: rotateQueue(slots, false, snapshot.currentNumber, snapshot.nextNumber),
-    youAreNextIn,
-    youCastIn: youAreNextIn,
+    youAreNextIn: null,
+    youCastIn: null,
     nowMs: now,
   };
 }

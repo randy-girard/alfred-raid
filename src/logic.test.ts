@@ -501,12 +501,13 @@ describe("liveSnapshot", () => {
     expect(liveSnapshot(null, 1000)).toBeNull();
   });
 
-  it("recomputes remaining cast time and you-are-next countdown", () => {
+  it("recomputes remaining cast time while stopped without a next-up countdown", () => {
     const live = liveSnapshot(snap(), 2_500)!;
     const current = live.slots.find((s) => s.number === 2)!;
     expect(current.remainingSeconds).toBe(8.5);
     expect(current.progress).toBe(0.85);
-    expect(live.youAreNextIn).toBe(0.5);
+    expect(live.youAreNextIn).toBeNull();
+    expect(live.youCastIn).toBeNull();
     expect(live.nowMs).toBe(2_500);
   });
 
@@ -740,5 +741,7 @@ describe("liveSnapshot", () => {
       2_500,
     )!;
     expect(live.slots.map((s) => s.number)).toEqual([2, 3, 1]);
+    expect(live.youAreNextIn).toBeNull();
+    expect(live.youCastIn).toBeNull();
   });
 });
