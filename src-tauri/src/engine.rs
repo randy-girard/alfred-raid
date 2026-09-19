@@ -337,7 +337,7 @@ mod tests {
     }
 
     #[test]
-    fn split_ot_chain_is_separate_and_hidden_from_you() {
+    fn split_ot_chain_runs_on_its_own_clock_beside_yours() {
         let chain = run(&[
             &ts("Leadcleric tells the guild, '!mt Mluian'"),
             &ts("You tell the guild, '!take 001'"),
@@ -355,11 +355,18 @@ mod tests {
             .iter()
             .any(|tank| tank.name == "Beefwich" && tank.armed));
         assert_eq!(snap.your_tank.as_deref(), Some("Mluian"));
-        assert!(snap.slots.iter().all(|slot| slot.number < 9));
-        assert!(snap
-            .slots
-            .iter()
-            .all(|slot| slot.tank.as_deref() == Some("Mluian")));
+        for slot in &snap.slots {
+            let expected = if slot.number >= 9 {
+                "Beefwich"
+            } else {
+                "Mluian"
+            };
+            assert_eq!(slot.tank.as_deref(), Some(expected), "slot {}", slot.number);
+        }
+        assert!(
+            snap.slots.iter().any(|slot| slot.number >= 9),
+            "the off tank cleric should still be visible"
+        );
     }
 
     #[test]

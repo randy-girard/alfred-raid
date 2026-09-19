@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Alfred — Demo scenario</title>
+    <script type="module" src="/src/demo.ts" defer></script>
+  </head>
+  <body class="tester">
+    <div id="app">
+      <header class="top">
+        <div class="brand">
+          <div class="mark" aria-hidden="true">D</div>
+          <div class="brand-copy">
+            <h1>Demo scenario</h1>
+            <p>Alfred plays a raid to itself while you watch the panels</p>
+          </div>
+        </div>
+      </header>
+
+      <section class="view">
+        <p class="tester-hint">
+          Every step below is fed in as a real log line, so the Chain and Report tabs react
+          exactly as they would in game. Nothing is sent to EverQuest. Start clears the panels,
+          and so does Stop.
+        </p>
+
+        <label class="field">
+          <span>Scenario</span>
+          <select id="demo-scenario"></select>
+          <small id="demo-description"></small>
+        </label>
+
+        <p id="demo-length" class="tester-hint"></p>
+
+        <fieldset class="radios" id="demo-options">
+          <legend>Roster</legend>
+          <div class="grid">
+            <label class="field">
+              <span>Clerics at pull</span>
+              <input id="demo-clerics" type="number" min="1" max="24" step="1" value="8" />
+            </label>
+            <label class="field">
+              <span>Build to</span>
+              <input id="demo-max-clerics" type="number" min="1" max="24" step="1" value="20" />
+            </label>
+          </div>
+          <label class="field">
+            <span>Chain runs (min)</span>
+            <input id="demo-minutes" type="number" min="1" max="30" step="1" value="4" />
+          </label>
+          <small id="demo-pace"></small>
+        </fieldset>
+
+        <label class="field">
+          <span>Speed</span>
+          <select id="demo-speed">
+            <option value="0.5">Half speed</option>
+            <option value="1" selected>Real time</option>
+            <option value="2">2× faster</option>
+            <option value="4">4× faster</option>
+          </select>
+        </label>
+
+        <div class="row">
+          <button id="demo-start" class="primary" type="button">Start</button>
+          <button id="demo-stop" type="button" disabled>Stop</button>
+          <button id="demo-clear" type="button">Clear log</button>
+        </div>
+
+        <p id="demo-progress" class="save-status"></p>
+        <ul id="demo-log" class="demo-log"></ul>
+      </section>
+    </div>
+  </body>
+</html>

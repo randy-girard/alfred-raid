@@ -29,24 +29,40 @@ import {
   firstRunSteps,
   setupStepLabel,
   commandListHtml,
+  alertBannerClass,
   alertMode,
   eqDirStatusText,
+  chainKindLabel,
+  chainRail,
+  primaryChain,
+  sideChainsHtml,
   slotClassName,
+  yourSlotLabel,
+  yourSlotNumber,
+  yourTankName,
+  yourTankSlots,
   watchStatusLabel,
   updateAvailableMessage,
   updateUpToDateMessage,
   updateProgressLabel,
   updateNotesPreview,
+  clericTableHtml,
+  sessionEventsHtml,
+  sessionOptionLabel,
+  sessionScoreHtml,
+  sessionSummaryHtml,
   CHAIN_COMMANDS,
   RAMPAGE_COMMANDS,
   type ChainSnapshot,
   type EqDirectoryProbe,
+  type SessionReport,
   type SetupStep,
+  type SideChain,
   type WatchStatus,
 } from "./logic";
 
-type View = "chain" | "rampage" | "commands" | "settings";
-const VIEWS: View[] = ["chain", "rampage", "commands", "settings"];
+type View = "chain" | "commands" | "report" | "settings";
+const VIEWS: View[] = ["chain", "commands", "report", "settings"];
 
 type RaidSnapshot = {
   chain: ChainSnapshot;
@@ -58,8 +74,11 @@ type PanelIds = {
   interval: string;
   state: string;
   youName: string;
+  youSlot: string;
+  youSlotBadge: string;
   empty: string;
   slots: string;
+  side: string;
   banner: string;
   eta: string;
   offset: string;
@@ -137,6 +156,8 @@ let updateDismissedVersion: string | null = null;
 let updateInstalling = false;
 let updateProgress: { downloaded: number; contentLength: number } | null = null;
 let updateError: string | null = null;
+let sessions: SessionReport[] = [];
+let selectedSession: number | null = null;
 
 const EQ_DIR_HINT =
   "On first launch Alfred looks in common EQ, Steam, Wine, and CrossOver folders. Paste or browse if it missed yours.";
@@ -157,6 +178,47 @@ function setView(view: View) {
     $(`view-${name}`).hidden = view !== name;
     $(`tab-${name}`).classList.toggle("is-active", view === name);
   }
+  if (view === "report") void refreshSessions();
+}
+
+async function refreshSessions() {
+  try {
+    sessions = await invoke<SessionReport[]>("get_session_reports");
+    $("report-status").textContent = "";
+  } catch (err) {
+    sessions = [];
+    $("report-status").textContent = String(err);
+  }
+  renderReport();
+}
+
+function renderReport() {
+  const picker = $("report-session") as HTMLSelectElement;
+  const body = $("report-body");
+  const empty = $("report-empty");
+
+  if (selectedSession == null || !sessions.some((item) => item.id === selectedSession)) {
+    selectedSession = sessions[0]?.id ?? null;
+  }
+  picker.hidden = sessions.length === 0;
+  picker.innerHTML = sessions
+    .map(
+      (session) =>
+        `<option value="${session.id}">${escapeHtml(sessionOptionLabel(session))}</option>`,
+    )
+    .join("");
+  if (selectedSession != null) picker.value = String(selectedSession);
+
+  const report = sessions.find((item) => item.id === selectedSession) ?? null;
+  empty.hidden = report != null;
+  body.hidden = report == null;
+  ($("clear-sessions") as HTMLButtonElement).disabled = sessions.length === 0;
+  if (!report) return;
+
+  $("report-score").innerHTML = sessionScoreHtml(report);
+  $("report-summary").innerHTML = sessionSummaryHtml(report);
+  $("report-clerics").innerHTML = clericTableHtml(report);
+  $("report-timeline").innerHTML = sessionEventsHtml(report);
 }
 
 function renderSetup() {
@@ -189,50 +251,46 @@ function goSetup(delta: number) {
 }
 
 function renderChain() {
+  const now = Date.now();
+  const chain = tickSnapshot(raid?.chain ?? null, now);
+  const rampage = tickSnapshot(raid?.rampage ?? null, now);
+  // One list, one banner: the chain you are on leads, the rest go to the side.
+  const primary = primaryChain(chain, rampage);
+  const other = primary.kind === "chain" ? rampage : chain;
   renderPanel(
-    tickSnapshot(raid?.chain ?? null, Date.now()),
+    primary.live,
+    chainRail(primary.live, other),
     {
       tank: "tank-name",
       interval: "interval",
       state: "chain-state",
       youName: "you-name",
+      youSlot: "you-slot",
+      youSlotBadge: "you-slot-badge",
       empty: "empty",
       slots: "slots",
+      side: "side-chains",
       banner: "you-banner",
       eta: "you-eta",
       offset: "you-offset",
       progress: "you-progress",
     },
-    "chain",
-  );
-  renderPanel(
-    tickSnapshot(raid?.rampage ?? null, Date.now()),
-    {
-      tank: "r-tank-name",
-      interval: "r-interval",
-      state: "r-chain-state",
-      youName: "r-you-name",
-      empty: "r-empty",
-      slots: "r-slots",
-      banner: "r-you-banner",
-      eta: "r-you-eta",
-      offset: "r-you-offset",
-      progress: "r-you-progress",
-    },
-    "rampage",
+    primary.kind,
   );
   renderAlerts();
 }
 
 function renderPanel(
   live: ChainSnapshot | null,
+  rail: SideChain[],
   ids: PanelIds,
   kind: "chain" | "rampage",
 ) {
   const empty = $(ids.empty);
   const slotsEl = $(ids.slots);
+  const sideEl = $(ids.side);
   const banner = $(ids.banner) as HTMLDivElement;
-  const audible = currentView === kind;
+  const audible = currentView === "chain";
 
   $(ids.tank).textContent = live?.yourTank
     || (live?.tanks?.length ? live.tanks.map((tank) => tank.name).join(" · ") : live?.tank)
@@ -251,48 +309,50 @@ function renderPanel(
           .join(" · ")
       : chainStateLabel({ running: live?.running ?? false, armed: live?.armed });
   $(ids.youName).textContent = live?.yourName || watch?.character || "—";
+  const yourSlot = $(ids.youSlot);
+  const number = yourSlotNumber(live);
+  yourSlot.textContent = yourSlotLabel(live);
+  yourSlot.parentElement?.classList.toggle("has-slot", number != null);
+  $(ids.youSlotBadge).textContent =
+    number != null && live ? formatSlot(number, live.slotFormat) : "";
 
+  const side = sideChainsHtml(rail);
   if (!live || live.slots.length === 0) {
     slotsEl.innerHTML = "";
+    sideEl.innerHTML = side;
+    sideEl.hidden = side === "";
     empty.hidden = false;
   } else {
     empty.hidden = true;
-    const groups = new Map<string, typeof live.slots>();
-    for (const slot of live.slots) {
-      const key = live.yourTank || slot.tank || live.tank || "";
-      const list = groups.get(key) ?? [];
-      list.push(slot);
-      groups.set(key, list);
-    }
-    const showHeadings = !live.yourTank && groups.size > 1;
-    slotsEl.innerHTML = [...groups.entries()]
-      .map(([name, group]) => {
-        const heading =
-          showHeadings && name
-            ? `<h2 class="tank-group-title">${escapeHtml(name)}</h2>`
-            : "";
-        const cards = group
-          .map((slot) => {
-            const width = Math.round(slot.progress * 1000) / 10;
-            const castWidth = Math.round(slot.castProgress * 1000) / 10;
-            const flags = [
-              slot.isNext ? '<span class="flag next">Next</span>' : "",
-              slot.skipped ? '<span class="flag skip">Skip</span>' : "",
-            ].join("");
-            const offset = formatOffset(slot.offsetSeconds);
-            const hitMod = offsetClassName(slot.offsetSeconds);
-            const tankRunning =
-              live.tanks.find((tank) => tank.name === (slot.tank || name))?.running ?? live.running;
-            const showCastBar =
-              tankRunning &&
-              slot.castRemainingSeconds > 0 &&
-              Math.abs(slot.castRemainingSeconds - slot.remainingSeconds) > 0.05;
-            const remainingLabel =
-              slot.lastShoutMs || slot.lastCastMs || tankRunning
-                ? `Next ${slot.remainingSeconds.toFixed(1)}s`
-                : "—";
-            const hitLabel = offset ? `Last hit ${offset}` : "No hit yet";
-            return `<article class="${slotClassName(slot)}">
+    const mine = yourTankSlots(live);
+    const name = yourTankName(live);
+    // With another rotation alongside, say which one the big list is.
+    const heading = side && name
+      ? `<h2 class="tank-group-title">${escapeHtml(name)} <small>${escapeHtml(chainKindLabel(live))}</small></h2>`
+      : "";
+    const cards = mine
+      .map((slot) => {
+        const width = Math.round(slot.progress * 1000) / 10;
+        const castWidth = Math.round(slot.castProgress * 1000) / 10;
+        const flags = [
+          slot.isYou ? '<span class="flag you">You</span>' : "",
+          slot.isNext ? '<span class="flag next">Next</span>' : "",
+          slot.skipped ? '<span class="flag skip">Skip</span>' : "",
+        ].join("");
+        const offset = formatOffset(slot.offsetSeconds);
+        const hitMod = offsetClassName(slot.offsetSeconds);
+        const tankRunning =
+          live.tanks.find((tank) => tank.name === (slot.tank || name))?.running ?? live.running;
+        const showCastBar =
+          tankRunning &&
+          slot.castRemainingSeconds > 0 &&
+          Math.abs(slot.castRemainingSeconds - slot.remainingSeconds) > 0.05;
+        const remainingLabel =
+          slot.lastShoutMs || slot.lastCastMs || tankRunning
+            ? `Next ${slot.remainingSeconds.toFixed(1)}s`
+            : "—";
+        const hitLabel = offset ? `Last hit ${offset}` : "No hit yet";
+        return `<article class="${slotClassName(slot)}">
           <div class="slot-head">
             <span class="num">${formatSlot(slot.number, live.slotFormat)}</span>
             <span class="player">${escapeHtml(slot.player)}</span>
@@ -313,11 +373,11 @@ function renderPanel(
           }
           <div class="hit${hitMod ? ` ${hitMod}` : ""}">${hitLabel}</div>
         </article>`;
-          })
-          .join("");
-        return `${heading}${cards}`;
       })
       .join("");
+    slotsEl.innerHTML = `${heading}${cards}`;
+    sideEl.innerHTML = side;
+    sideEl.hidden = side === "";
   }
 
   const eta = live?.running ? live.youCastIn : live?.youAreNextIn;
@@ -401,7 +461,7 @@ function renderAlerts() {
   host.hidden = unique.length === 0;
   host.innerHTML = unique
     .map((item) => {
-      const cls = item.urgent ? "banner danger dismissable" : "banner warn dismissable";
+      const cls = alertBannerClass(item.warningKind, item.urgent);
       return `<div class="${cls}" data-warning="${item.kind}" role="alert">
         <span>${escapeHtml(item.warning)}</span>
         <button type="button" class="banner-dismiss" aria-label="Dismiss">×</button>
@@ -449,11 +509,9 @@ function fillSettings(cfg: AppConfig) {
   const lead = $("sound-lead") as HTMLInputElement;
   lead.disabled = mode !== "sound";
   const interval = $("interval-seconds") as HTMLInputElement;
-  const cast = $("cast-time") as HTMLInputElement;
   const tag = $("chain-tag") as HTMLInputElement;
   if (active !== lead) lead.value = String(cfg.soundLeadSeconds);
   if (active !== interval) interval.value = String(cfg.intervalSeconds);
-  if (active !== cast) cast.value = String(cfg.castTimeSeconds);
   if (active !== tag) tag.value = cfg.chainTag || "GG";
   ($("alert-slot-taken") as HTMLInputElement).checked = cfg.alertSlotTaken;
   ($("alert-wrong-target") as HTMLInputElement).checked = cfg.alertWrongTarget;
@@ -481,7 +539,6 @@ function readSettingsPatch(): Record<string, unknown> {
     metronomeEnabled: ($("metronome-enabled") as HTMLInputElement).checked,
     soundLeadSeconds: optionalNumber("sound-lead", 0),
     intervalSeconds: optionalNumber("interval-seconds", 0.1),
-    castTimeSeconds: optionalNumber("cast-time", 0.1),
     chainTag: ($("chain-tag") as HTMLInputElement).value,
     alertSlotTaken: ($("alert-slot-taken") as HTMLInputElement).checked,
     alertWrongTarget: ($("alert-wrong-target") as HTMLInputElement).checked,
@@ -1042,6 +1099,26 @@ window.addEventListener("DOMContentLoaded", () => {
       $("save-status").textContent = String(err);
     });
   });
+  $("open-demo").addEventListener("click", () => {
+    void invoke("open_demo").catch((err) => {
+      $("save-status").textContent = String(err);
+    });
+  });
+  $("report-session").addEventListener("change", (event) => {
+    const value = Number((event.target as HTMLSelectElement).value);
+    selectedSession = Number.isFinite(value) ? value : null;
+    renderReport();
+  });
+  $("clear-sessions").addEventListener("click", () => {
+    void invoke("clear_sessions")
+      .then(() => {
+        selectedSession = null;
+        return refreshSessions();
+      })
+      .catch((err) => {
+        $("report-status").textContent = String(err);
+      });
+  });
   $("check-updates").addEventListener("click", () => {
     void checkForUpdates({ quiet: false });
   });
@@ -1057,7 +1134,7 @@ window.addEventListener("DOMContentLoaded", () => {
       void saveSettingsFromForm();
     });
   });
-  for (const id of ["sound-lead", "interval-seconds", "cast-time", "chain-tag", "alert-dismiss-seconds", "overlay-opacity"]) {
+  for (const id of ["sound-lead", "interval-seconds", "chain-tag", "alert-dismiss-seconds", "overlay-opacity"]) {
     const input = $(id);
     input.addEventListener("input", () => scheduleSaveSettings());
     input.addEventListener("change", () => {
@@ -1105,6 +1182,9 @@ window.addEventListener("DOMContentLoaded", () => {
     });
     await listen("check-updates", () => {
       void checkForUpdates({ quiet: false });
+    });
+    await listen("sessions-changed", () => {
+      if (currentView === "report") void refreshSessions();
     });
     void checkForUpdates({ quiet: true });
   })();

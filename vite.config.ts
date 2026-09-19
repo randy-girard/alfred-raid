@@ -33,6 +33,7 @@ export default defineConfig(() => ({
         index: "index.html",
         tester: "tester.html",
         overlay: "overlay.html",
+        demo: "demo.html",
       },
     },
   },

@@ -1,7 +1,10 @@
 use crate::parser::{ChainCommand, CompleteHealCall};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Events are drained by the report recorder after every batch of log lines.
+const MAX_PENDING_EVENTS: usize = 4096;
 
 #[derive(Debug, Clone)]
 pub struct ClericSlot {
@@ -50,6 +53,66 @@ pub enum WarningKind {
     WrongTarget,
     AutoTake,
     StartChain,
+    Pace,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ChainEventKind {
+    Heal,
+    Start,
+    Stop,
+    Reset,
+    Claim,
+    Skip,
+    Back,
+    Move,
+    Tank,
+    Interval,
+    WrongTarget,
+    Warning,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChainEvent {
+    pub at_ms: u64,
+    pub kind: ChainEventKind,
+    pub player: Option<String>,
+    /// Set when `player` is you, however the log named you on that line.
+    #[serde(default)]
+    pub is_you: bool,
+    pub number: Option<u32>,
+    pub target: Option<String>,
+    pub tank: Option<String>,
+    pub offset_seconds: Option<f64>,
+    pub text: String,
+}
+
+impl ChainEvent {
+    fn new(kind: ChainEventKind, at_ms: u64, text: String) -> Self {
+        Self {
+            at_ms,
+            kind,
+            player: None,
+            is_you: false,
+            number: None,
+            target: None,
+            tank: None,
+            offset_seconds: None,
+            text,
+        }
+    }
+
+    fn by(mut self, player: &str) -> Self {
+        self.player = Some(player.to_string());
+        self
+    }
+
+    fn at_slot(mut self, number: u32) -> Self {
+        self.number = Some(number);
+        self
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,6 +159,7 @@ pub struct ChainState {
     shout_sync: bool,
     heard_start: bool,
     armed: bool,
+    events: Vec<ChainEvent>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -196,6 +260,7 @@ impl ChainState {
             shout_sync: false,
             heard_start: false,
             armed: false,
+            events: Vec::new(),
         }
     }
 
@@ -214,6 +279,24 @@ impl ChainState {
                 letter.to_string().repeat(3)
             }
         }
+    }
+
+    /// Your own lines reach the chain under whatever name the log used: "You"
+    /// for your commands, your character name once Alfred knows it. Events are
+    /// filed under one name so the report does not split you in two.
+    fn push_event(&mut self, mut event: ChainEvent) {
+        if event.player.as_deref().is_some_and(|p| self.is_you(p)) {
+            event.is_you = true;
+            event.player = Some("You".to_string());
+        }
+        if self.events.len() >= MAX_PENDING_EVENTS {
+            self.events.remove(0);
+        }
+        self.events.push(event);
+    }
+
+    pub fn take_events(&mut self) -> Vec<ChainEvent> {
+        std::mem::take(&mut self.events)
     }
 
     pub fn set_your_name(&mut self, name: String) {
@@ -242,6 +325,10 @@ impl ChainState {
         let is_you = call.is_you || self.is_you(&player);
         if self.occupied_by_other(call.number, &player) {
             let msg = self.slot_taken_message(call.number, &player, is_you);
+            let event = ChainEvent::new(ChainEventKind::Warning, now, msg.clone())
+                .by(&player)
+                .at_slot(call.number);
+            self.push_event(event);
             self.set_warning_at(msg, now, is_you, WarningKind::SlotTaken);
             return;
         }
@@ -288,13 +375,45 @@ impl ChainState {
             self.preserve_beat(key, now, prev_current);
         }
         self.record_actual(call.number, now);
+        self.record_heal_event(call.number, now);
         if already_on && was_running {
             if let Some(msg) = self.target_mismatch(call.number, &target_name, is_you) {
+                let player = self
+                    .slots
+                    .get(&call.number)
+                    .map(|slot| slot.player.clone())
+                    .unwrap_or_default();
+                let mut event = ChainEvent::new(ChainEventKind::WrongTarget, now, msg.clone())
+                    .by(&player)
+                    .at_slot(call.number);
+                event.target = Some(target_name);
+                self.push_event(event);
                 self.set_warning_at(msg, now, is_you, WarningKind::WrongTarget);
                 return;
             }
         }
         self.clear_warning();
+    }
+
+    fn record_heal_event(&mut self, number: u32, now: u64) {
+        let Some(slot) = self.slots.get(&number) else {
+            return;
+        };
+        let player = slot.player.clone();
+        let target = slot.target.clone();
+        let offset_seconds = slot.last_offset_seconds;
+        let tank = self.display_name(&self.tank_key_for(number));
+        let mut event = ChainEvent::new(
+            ChainEventKind::Heal,
+            now,
+            format!("{player} cast {}", self.fmt_slot(number)),
+        )
+        .by(&player)
+        .at_slot(number);
+        event.target = target;
+        event.tank = Some(tank);
+        event.offset_seconds = offset_seconds;
+        self.push_event(event);
     }
 
     fn record_actual(&mut self, number: u32, actual: u64) {
@@ -312,6 +431,140 @@ impl ChainState {
     }
 
     pub fn apply_command_at(
+        &mut self,
+        cmd: ChainCommand,
+        speaker: String,
+        now: u64,
+    ) -> Option<String> {
+        let warning = self.apply_command_inner(cmd.clone(), speaker.clone(), now);
+        if warning.is_none() {
+            if let Some(event) = self.command_event(&cmd, &speaker, now) {
+                self.push_event(event);
+            }
+        }
+        warning
+    }
+
+    /// Describes a command that just ran, for the session report timeline.
+    fn command_event(&self, cmd: &ChainCommand, speaker: &str, now: u64) -> Option<ChainEvent> {
+        let who = if self.is_you(speaker) { "You" } else { speaker };
+        let event = match cmd {
+            ChainCommand::StartChain { tank } => {
+                let text = match tank {
+                    Some(tank) => format!("{who} started the chain on {tank}"),
+                    None => format!("{who} started the chain"),
+                };
+                ChainEvent::new(ChainEventKind::Start, now, text)
+            }
+            ChainCommand::EndChain { tank } => {
+                let text = match tank {
+                    Some(tank) => format!("{who} stopped the chain on {tank}"),
+                    None => format!("{who} stopped the chain"),
+                };
+                ChainEvent::new(ChainEventKind::Stop, now, text)
+            }
+            ChainCommand::ResetChain => {
+                ChainEvent::new(ChainEventKind::Reset, now, format!("{who} reset the chain"))
+            }
+            ChainCommand::Take { number, player } => {
+                let player = player.as_deref().unwrap_or(who);
+                ChainEvent::new(
+                    ChainEventKind::Claim,
+                    now,
+                    format!("{player} took {}", self.fmt_slot(*number)),
+                )
+                .by(player)
+                .at_slot(*number)
+            }
+            ChainCommand::TakeNext { player } => {
+                let player = player.as_deref().unwrap_or(who);
+                let number = self.slot_number_for_player(player)?;
+                ChainEvent::new(
+                    ChainEventKind::Claim,
+                    now,
+                    format!("{player} took {}", self.fmt_slot(number)),
+                )
+                .by(player)
+                .at_slot(number)
+            }
+            ChainCommand::Skip { number } => {
+                let number = self.resolve_slot_number(*number, speaker, "skip").ok()?;
+                ChainEvent::new(
+                    ChainEventKind::Skip,
+                    now,
+                    format!("{} was skipped", self.fmt_slot(number)),
+                )
+                .by(self.player_at(number).unwrap_or(who))
+                .at_slot(number)
+            }
+            ChainCommand::Back { number } => {
+                let number = self.resolve_slot_number(*number, speaker, "back").ok()?;
+                ChainEvent::new(
+                    ChainEventKind::Back,
+                    now,
+                    format!("{} is back in", self.fmt_slot(number)),
+                )
+                .by(self.player_at(number).unwrap_or(who))
+                .at_slot(number)
+            }
+            ChainCommand::Move { from, to } => ChainEvent::new(
+                ChainEventKind::Move,
+                now,
+                format!(
+                    "{who} moved {} to {}",
+                    self.fmt_slot(*from),
+                    self.fmt_slot(*to)
+                ),
+            ),
+            ChainCommand::MainTank { tank } => ChainEvent::new(
+                ChainEventKind::Tank,
+                now,
+                format!("{who} set the main tank to {tank}"),
+            ),
+            ChainCommand::OffTank { tank } => ChainEvent::new(
+                ChainEventKind::Tank,
+                now,
+                format!("{who} set the off tank to {tank}"),
+            ),
+            ChainCommand::Split { number } => ChainEvent::new(
+                ChainEventKind::Tank,
+                now,
+                format!("{who} split the chain at {}", self.fmt_slot(*number)),
+            ),
+            ChainCommand::TankRange { tank, from, to } => ChainEvent::new(
+                ChainEventKind::Tank,
+                now,
+                format!(
+                    "{who} gave {tank} {} to {}",
+                    self.fmt_slot(*from),
+                    self.fmt_slot(*to)
+                ),
+            ),
+            ChainCommand::Untank { tank } => ChainEvent::new(
+                ChainEventKind::Tank,
+                now,
+                format!("{who} removed tank {tank}"),
+            ),
+            ChainCommand::ChainInterval { seconds, tank } => {
+                let text = match tank {
+                    Some(tank) => format!("{who} set {tank} to {seconds:.1}s"),
+                    None => format!("{who} set the interval to {seconds:.1}s"),
+                };
+                ChainEvent::new(ChainEventKind::Interval, now, text)
+            }
+        };
+        let mut event = event;
+        if event.tank.is_none() {
+            event.tank = Some(self.display_name(&TankKey::Main));
+        }
+        Some(event)
+    }
+
+    fn player_at(&self, number: u32) -> Option<&str> {
+        self.slots.get(&number).map(|slot| slot.player.as_str())
+    }
+
+    fn apply_command_inner(
         &mut self,
         cmd: ChainCommand,
         speaker: String,
@@ -431,14 +684,20 @@ impl ChainState {
                 }
                 None
             }
-            ChainCommand::ChainInterval { seconds, tank } => self.set_interval(seconds, tank),
+            ChainCommand::ChainInterval { seconds, tank } => self.set_interval(seconds, tank, now),
             ChainCommand::StartChain { tank } => self.start_chains(tank, now),
             ChainCommand::EndChain { tank } => self.stop_chains(tank),
         }
     }
 
     pub fn set_warning(&mut self, warning: String) {
-        self.set_warning_at(warning, now_ms(), false, WarningKind::Other);
+        let now = now_ms();
+        self.push_event(ChainEvent::new(
+            ChainEventKind::Warning,
+            now,
+            warning.clone(),
+        ));
+        self.set_warning_at(warning, now, false, WarningKind::Other);
     }
 
     fn set_warning_at(&mut self, warning: String, now: u64, urgent: bool, kind: WarningKind) {
@@ -666,14 +925,16 @@ impl ChainState {
             .your_slot_number()
             .and_then(|n| self.slots.get(&n).and_then(|s| s.last_offset_seconds));
 
+        // Every tank's clerics are in the snapshot. The UI decides which
+        // rotation to put front and centre and which to keep off to the side.
         let slots = self
             .slots
             .values()
-            .filter(|slot| !focused || self.tank_key_for(slot.number) == view)
             .map(|slot| {
                 let key = self.tank_key_for(slot.number);
+                let mine = key == view;
                 let skipped = self.skipped.contains(&slot.number);
-                let slot_beat = if focused {
+                let slot_beat = if mine {
                     beat.clone()
                 } else {
                     self.beat_for(&key, now)
@@ -707,7 +968,7 @@ impl ChainState {
                     };
                     (remaining, progress)
                 };
-                let (is_current, is_next) = if focused {
+                let (is_current, is_next) = if focused && mine {
                     (
                         current_number == Some(slot.number),
                         next_number == Some(slot.number) && current_number != Some(slot.number),
@@ -1342,28 +1603,50 @@ impl ChainState {
         None
     }
 
-    fn set_interval(&mut self, seconds: f64, tank: Option<String>) -> Option<String> {
+    fn set_interval(&mut self, seconds: f64, tank: Option<String>, now: u64) -> Option<String> {
         let Some(name) = tank else {
+            let was = self.interval_seconds;
             self.interval_seconds = seconds;
+            self.announce_pace(None, was, seconds, now);
             return None;
         };
         match self.parse_tank_key(&name) {
             Some(TankKey::Main) => {
+                let was = self.interval_seconds;
                 self.interval_seconds = seconds;
+                self.announce_pace(None, was, seconds, now);
                 None
             }
             Some(TankKey::Named(found)) => {
+                let fallback = self.interval_seconds;
                 if let Some(tank) = self
                     .tanks
                     .iter_mut()
                     .find(|tank| tank.name.eq_ignore_ascii_case(&found))
                 {
+                    let was = tank.interval_seconds.unwrap_or(fallback);
                     tank.interval_seconds = Some(seconds);
+                    let name = tank.name.clone();
+                    self.announce_pace(Some(name), was, seconds, now);
                 }
                 None
             }
             None => Some(format!("Unknown tank {name}.")),
         }
+    }
+
+    /// A new pace changes when everyone casts, so it gets a banner of its own.
+    /// Re-sending the pace the chain is already on says nothing.
+    fn announce_pace(&mut self, tank: Option<String>, was: f64, now_seconds: f64, now: u64) {
+        if (was - now_seconds).abs() < 0.05 {
+            return;
+        }
+        let who = match tank {
+            Some(tank) => format!("{tank} is"),
+            None => "The chain is".into(),
+        };
+        let warning = format!("{who} now {now_seconds:.1}s, was {was:.1}s.");
+        self.set_warning_at(warning, now, false, WarningKind::Pace);
     }
 
     fn set_off_tank(&mut self, tank: String) -> Option<String> {
@@ -2274,6 +2557,69 @@ mod tests {
     }
 
     #[test]
+    fn a_new_pace_posts_an_alert_and_the_same_pace_says_nothing() {
+        let mut chain = ChainState::new(2.0, 10.0);
+        chain.apply_command_at(
+            ChainCommand::ChainInterval {
+                seconds: 3.4,
+                tank: None,
+            },
+            "Lead".into(),
+            5_000,
+        );
+        let snap = chain.snapshot_at(5_000);
+        assert_eq!(
+            snap.warning.as_deref(),
+            Some("The chain is now 3.4s, was 2.0s.")
+        );
+        assert_eq!(snap.warning_kind, WarningKind::Pace);
+        // A pace change is news, not something you did wrong.
+        assert!(!snap.warning_urgent);
+
+        // The lead re-sending the pace the chain already runs is not news.
+        chain.clear_warning();
+        chain.apply_command_at(
+            ChainCommand::ChainInterval {
+                seconds: 3.4,
+                tank: None,
+            },
+            "Lead".into(),
+            6_000,
+        );
+        assert_eq!(chain.snapshot_at(6_000).warning, None);
+    }
+
+    #[test]
+    fn a_tank_that_gets_its_own_pace_is_named_in_the_alert() {
+        let mut chain = filled();
+        chain.apply_command(
+            ChainCommand::MainTank {
+                tank: "Mluian".into(),
+            },
+            "Lead".into(),
+        );
+        chain.apply_command(
+            ChainCommand::OffTank {
+                tank: "Beefwich".into(),
+            },
+            "Lead".into(),
+        );
+        chain.apply_command(ChainCommand::Split { number: 3 }, "Lead".into());
+        chain.apply_command_at(
+            ChainCommand::ChainInterval {
+                seconds: 5.0,
+                tank: Some("ot".into()),
+            },
+            "Lead".into(),
+            7_000,
+        );
+        assert_eq!(
+            chain.snapshot_at(7_000).warning.as_deref(),
+            Some("Beefwich is now 5.0s, was 2.0s.")
+        );
+    }
+
+    #[test]
     fn start_and_end_iterate_on_interval_and_update_on_skip() {
         let mut chain = filled();
         assert!(chain
@@ -2489,11 +2835,22 @@ mod tests {
         assert_eq!(you.your_tank.as_deref(), Some("Mluian"));
         assert!(you.running);
         assert_eq!(you.current_number, Some(1));
-        assert!(you.slots.iter().all(|slot| slot.number < 3));
+        // Your tank drives the view, and the off tank's clerics ride along
+        // tagged with their own tank so the UI can show them off to the side.
         assert!(you
             .slots
             .iter()
+            .filter(|slot| slot.number < 3)
             .all(|slot| slot.tank.as_deref() == Some("Mluian")));
+        let theirs: Vec<&SlotSnapshot> = you.slots.iter().filter(|s| s.number >= 3).collect();
+        assert!(!theirs.is_empty(), "the off tank chain is missing");
+        assert!(theirs
+            .iter()
+            .all(|slot| slot.tank.as_deref() == Some("Beefwich")));
+        // The view's own current and next stay on your tank, even though the
+        // off tank's slots carry their own rotation flags for the side panel.
+        assert_eq!(you.next_number, Some(2));
+        assert!(theirs.iter().any(|slot| slot.is_current || slot.is_next));
 
         let ot_running = chain
             .tanks
@@ -2532,7 +2889,7 @@ mod tests {
     }
 
     #[test]
-    fn tank_range_command_hides_the_other_chain_from_you() {
+    fn tank_range_command_keeps_the_other_chain_on_the_side() {
         let mut chain = filled();
         chain.apply_command(
             ChainCommand::TankRange {
@@ -2551,11 +2908,19 @@ mod tests {
         );
         let snap = chain.snapshot_at(1_000);
         assert_eq!(snap.your_tank.as_deref(), Some("Beefwich"));
-        assert!(snap.slots.iter().all(|slot| slot.number >= 3));
-        assert!(snap
-            .slots
-            .iter()
-            .all(|slot| slot.tank.as_deref() == Some("Beefwich")));
+        // Numbers inside the range belong to your tank; the rest stay on the
+        // main tank and are still in the snapshot, tagged as such.
+        // Numbers inside the range belong to your tank; the rest are still in
+        // the snapshot under the main tank, which has no name in this chain.
+        for slot in &snap.slots {
+            let expected = if (3..=8).contains(&slot.number) {
+                "Beefwich"
+            } else {
+                "MT"
+            };
+            assert_eq!(slot.tank.as_deref(), Some(expected), "slot {}", slot.number);
+        }
+        assert!(snap.slots.iter().any(|slot| slot.number < 3));
     }
 
     #[test]

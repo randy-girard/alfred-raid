@@ -22,6 +22,7 @@ import {
   shouldPlayClaimAlert,
   shouldShowWarning,
   isAlertEnabled,
+  alertBannerClass,
   shouldSpeakWrongTarget,
   shouldSpeakAutoTake,
   shouldSpeakStartChain,
@@ -38,7 +39,35 @@ import {
   updateNotesPreview,
   eqDirStatusText,
   watchStatusLabel,
+  formatDuration,
+  formatPercent,
+  onTimeShare,
+  scoreClassName,
+  sessionKindLabel,
+  sessionOptionLabel,
+  sessionSlotFormat,
+  sessionScoreHtml,
+  sessionSummaryHtml,
+  clericTableHtml,
+  sessionEventsHtml,
+  demoEntryHtml,
+  demoLengthLabel,
+  demoPaceHint,
+  demoProgressLabel,
+  demoScenarioLabel,
+  clampDemoOptions,
+  fastestInterval,
+  chainRail,
+  primaryChain,
+  sideChains,
+  sideChainsHtml,
+  yourSlotLabel,
+  yourSlotNumber,
+  yourTankName,
+  yourTankSlots,
   type ChainSnapshot,
+  type ClericReport,
+  type SessionReport,
   type SlotSnapshot,
   type WatchStatus,
 } from "./logic";
@@ -375,6 +404,22 @@ describe("helpers", () => {
         alertWrongTarget: false,
       }),
     ).toBe(true);
+    // A pace change is not one of the alerts you can switch off.
+    expect(
+      isAlertEnabled({
+        kind: "pace",
+        alertSlotTaken: false,
+        alertWrongTarget: false,
+      }),
+    ).toBe(true);
+  });
+
+  it("shows a pace change as news and a mistake as a warning", () => {
+    expect(alertBannerClass("pace", false)).toBe("banner pace dismissable");
+    expect(alertBannerClass("slotTaken", false)).toBe("banner warn dismissable");
+    expect(alertBannerClass("slotTaken", true)).toBe("banner danger dismissable");
+    // Your own mistake still outranks the quieter pace styling.
+    expect(alertBannerClass("pace", true)).toBe("banner danger dismissable");
   });
 
   it("speaks wrong-target once when it is you", () => {
@@ -522,7 +567,204 @@ describe("overlay helpers", () => {
     expect(html).toContain("Running");
     expect(html).toContain("Clericone");
     expect(html).toContain("Cast in 3.0s");
+    // Your own number rides along with the countdown.
+    expect(html).toContain('<span class="overlay-you-slot">001</span>');
+    expect(html).toContain("is-you");
     expect(overlayPanelHtml(null, "Rampage")).toContain("Waiting");
+  });
+});
+
+describe("other tanks alongside your chain", () => {
+  // You are on 001 with Mluian; Beefwich has a four-cleric rotation of its own.
+  function split(over: Partial<ChainSnapshot> = {}): ChainSnapshot {
+    return snap({
+      ...over,
+      tank: "Mluian",
+      yourTank: "Mluian",
+      running: true,
+      startedAtMs: 1_000,
+      intervalSeconds: 2,
+      tanks: [
+        {
+          name: "Mluian",
+          from: null,
+          to: null,
+          intervalSeconds: 2,
+          running: true,
+          armed: false,
+          startedAtMs: 1_000,
+          currentNumber: 1,
+          nextNumber: 2,
+          beatTick: 0,
+          isYou: true,
+        },
+        {
+          name: "Beefwich",
+          from: 5,
+          to: 8,
+          intervalSeconds: 2.5,
+          running: true,
+          armed: false,
+          startedAtMs: 1_000,
+          currentNumber: 5,
+          nextNumber: 6,
+          beatTick: 0,
+          isYou: false,
+        },
+      ],
+      slots: [
+        slot({ number: 1, isYou: true, tank: "Mluian" }),
+        slot({ number: 2, player: "Two", isYou: false, tank: "Mluian" }),
+        slot({ number: 5, player: "Five", isYou: false, tank: "Beefwich" }),
+        slot({ number: 6, player: "Six", isYou: false, tank: "Beefwich" }),
+        slot({ number: 7, player: "Seven", isYou: false, tank: "Beefwich" }),
+        slot({ number: 8, player: "Eight", isYou: false, tank: "Beefwich", skipped: true }),
+        slot({ number: 9, player: "Nine", isYou: false, tank: "Beefwich" }),
+      ],
+    });
+  }
+
+  it("reports your own number for the header", () => {
+    expect(yourSlotLabel(liveSnapshot(snap(), 3_000))).toBe("001");
+    expect(yourSlotNumber(liveSnapshot(snap(), 3_000))).toBe(1);
+    expect(yourSlotLabel(liveSnapshot(snap({ slotFormat: "letter" }), 3_000))).toBe("AAA");
+    // Sitting out still tells you which number is yours.
+    const out = snap({
+      slots: [slot({ number: 4, isYou: true, skipped: true }), slot({ number: 2, isYou: false })],
+    });
+    expect(yourSlotLabel(liveSnapshot(out, 3_000))).toBe("004 (out)");
+    // Not on the chain at all.
+    const none = snap({ slots: [slot({ number: 2, player: "Two", isYou: false })] });
+    expect(yourSlotLabel(liveSnapshot(none, 3_000))).toBe("—");
+    expect(yourSlotNumber(liveSnapshot(none, 3_000))).toBeNull();
+    expect(yourSlotLabel(null)).toBe("—");
+    expect(yourSlotNumber(null)).toBeNull();
+  });
+
+  it("names your rotation and separates it from the rest", () => {
+    const live = liveSnapshot(split(), 3_000)!;
+    expect(yourTankName(live)).toBe("Mluian");
+    expect(yourTankSlots(live).map((s) => s.number)).toEqual([1, 2]);
+    // A chain with one tank has nothing to split off.
+    expect(yourTankSlots(liveSnapshot(snap(), 3_000)!).map((s) => s.number)).toEqual([1, 2]);
+  });
+
+  it("keeps your own countdown while the other tank runs on its own clock", () => {
+    const live = liveSnapshot(split(), 3_000)!;
+    expect(live.slots.length).toBe(7);
+    expect(live.running).toBe(true);
+    expect(live.youCastIn).not.toBeNull();
+    // Both rotations have their own current cleric.
+    const mine = live.slots.filter((s) => s.tank === "Mluian");
+    const theirs = live.slots.filter((s) => s.tank === "Beefwich");
+    expect(mine.some((s) => s.isCurrent)).toBe(true);
+    expect(theirs.some((s) => s.isCurrent)).toBe(true);
+    // The snapshot's own current and next stay on your tank.
+    expect(mine.map((s) => s.number)).toContain(live.currentNumber);
+  });
+
+  it("trims every other tank to the next few clerics", () => {
+    const live = liveSnapshot(split(), 3_000)!;
+    const sides = sideChains(live);
+    expect(sides.length).toBe(1);
+    const [side] = sides;
+    expect(side.tank).toBe("Beefwich");
+    expect(side.intervalSeconds).toBe(2.5);
+    expect(side.state).toBe("Running");
+    expect(side.clerics.length).toBe(3);
+    // 008 sat out, so it is not one of the three coming up.
+    expect(side.clerics.map((s) => s.number)).not.toContain(8);
+    expect(side.waiting).toBe(1);
+    expect(sideChains(live, 10)[0].waiting).toBe(0);
+  });
+
+  it("has nothing to show on the side of a single chain", () => {
+    expect(sideChains(liveSnapshot(snap(), 3_000)!)).toEqual([]);
+    expect(sideChains(null)).toEqual([]);
+    expect(sideChainsHtml([])).toBe("");
+  });
+
+  it("renders a quiet panel per tank with the next cleric marked", () => {
+    const live = liveSnapshot(split(), 3_000)!;
+    const html = sideChainsHtml(sideChains(live));
+    expect(html).toContain("side-chain");
+    expect(html).toContain("Beefwich");
+    expect(html).toContain("CH · Running · 2.5s");
+    // The list starts at whoever is up next, not at the lowest number.
+    expect(html.indexOf("006")).toBeLessThan(html.indexOf("007"));
+    expect(html).toContain("+1 more");
+    expect(html).toContain("is-next");
+    // Your own clerics are not repeated on the side.
+    expect(html).not.toContain("Clericone");
+    // A rampage rotation on the side keeps its letters and its own label.
+    const rch = liveSnapshot(split({ slotFormat: "letter" }), 3_000)!;
+    const rchHtml = sideChainsHtml(sideChains(rch));
+    expect(rchHtml).toContain("FFF");
+    expect(rchHtml).toContain("RCH · Running · 2.5s");
+  });
+
+  it("leads with the chain you are on and sides the other one", () => {
+    const ch = liveSnapshot(split(), 3_000)!;
+    // You are on the cleric chain, so it leads even when a rampage runs too.
+    const rampageWithoutYou = liveSnapshot(
+      snap({
+        slotFormat: "letter",
+        tank: "Grendel",
+        yourTank: null,
+        slots: [
+          slot({ number: 1, player: "Rampone", isYou: false, tank: "Grendel" }),
+          slot({ number: 2, player: "Ramptwo", isYou: false, tank: "Grendel" }),
+        ],
+      }),
+      3_000,
+    )!;
+    expect(primaryChain(ch, rampageWithoutYou).kind).toBe("chain");
+
+    // Off the cleric chain and on rampage, rampage leads instead.
+    const chWithoutYou = liveSnapshot(
+      snap({ slots: [slot({ number: 2, player: "Two", isYou: false })] }),
+      3_000,
+    )!;
+    const yourRampage = liveSnapshot(
+      snap({
+        slotFormat: "letter",
+        tank: "Grendel",
+        slots: [slot({ number: 1, isYou: true, tank: "Grendel" })],
+      }),
+      3_000,
+    )!;
+    const primary = primaryChain(chWithoutYou, yourRampage);
+    expect(primary.kind).toBe("rampage");
+    expect(yourSlotLabel(primary.live)).toBe("AAA");
+
+    // The rail carries the other tanks on your chain plus every rampage one.
+    const rail = chainRail(ch, yourRampage);
+    expect(rail.map((side) => `${side.kind} ${side.tank}`)).toEqual([
+      "CH Beefwich",
+      "RCH Grendel",
+    ]);
+    // With nothing else running there is no rail at all.
+    expect(chainRail(liveSnapshot(snap(), 3_000), null)).toEqual([]);
+  });
+
+  it("falls back to whichever chain has clerics when you are on neither", () => {
+    const empty = liveSnapshot(snap({ slots: [] }), 3_000)!;
+    const rampage = liveSnapshot(
+      snap({
+        slotFormat: "letter",
+        slots: [slot({ number: 1, player: "Rampone", isYou: false })],
+      }),
+      3_000,
+    )!;
+    expect(primaryChain(empty, rampage).kind).toBe("rampage");
+    expect(primaryChain(null, null).kind).toBe("chain");
+  });
+
+  it("keeps the overlay on your rotation alone", () => {
+    const live = liveSnapshot(split(), 3_000)!;
+    const html = overlayPanelHtml(live, "CH");
+    expect(html).toContain("Clericone");
+    expect(html).not.toContain("Seven");
   });
 });
 
@@ -860,5 +1102,323 @@ describe("liveSnapshot", () => {
     expect(live.slots.map((s) => s.number)).toEqual([2, 3, 1]);
     expect(live.youAreNextIn).toBeNull();
     expect(live.youCastIn).toBeNull();
+  });
+});
+
+function cleric(overrides: Partial<ClericReport> = {}): ClericReport {
+  return {
+    rank: 1,
+    player: "Clericone",
+    slots: [1],
+    heals: 10,
+    onTime: 8,
+    early: 1,
+    late: 1,
+    missedTurns: 0,
+    wrongTarget: 0,
+    skips: 0,
+    isYou: true,
+    avgOffsetSeconds: 0.04,
+    worstLateSeconds: null,
+    score: 96,
+    ...overrides,
+  };
+}
+
+function report(overrides: Partial<SessionReport> = {}): SessionReport {
+  return {
+    id: 3,
+    kind: "ch",
+    live: false,
+    startedAtMs: 1_700_000_000_000,
+    endedAtMs: 1_700_000_192_000,
+    durationSeconds: 192,
+    tank: "Mluian",
+    totalHeals: 24,
+    missedTurns: 1,
+    wrongTarget: 1,
+    warnings: 2,
+    avgOffsetSeconds: 0.12,
+    score: 92,
+    clerics: [cleric()],
+    events: [
+      {
+        atMs: 1_700_000_000_000,
+        kind: "start",
+        player: "Raidlead",
+        number: null,
+        target: null,
+        tank: "Mluian",
+        offsetSeconds: null,
+        text: "Raidlead started the chain",
+      },
+      {
+        atMs: 1_700_000_002_000,
+        kind: "heal",
+        player: "Clericone",
+        number: 1,
+        target: "Mluian",
+        tank: "Mluian",
+        offsetSeconds: 0.4,
+        text: "Clericone cast 001",
+      },
+    ],
+    ...overrides,
+  };
+}
+
+describe("session report helpers", () => {
+  it("formats how long a session ran", () => {
+    expect(formatDuration(0)).toBe("0s");
+    expect(formatDuration(-4)).toBe("0s");
+    expect(formatDuration(45)).toBe("45s");
+    expect(formatDuration(192)).toBe("3m 12s");
+    expect(formatDuration(3_720)).toBe("1h 02m");
+  });
+
+  it("labels a session by score, chain, length, and cleric count", () => {
+    const label = sessionOptionLabel(report());
+    expect(label).toContain("Score 92");
+    expect(label).toContain("CH");
+    expect(label).toContain("3m 12s");
+    expect(label).toContain("1 cleric");
+    expect(label).toContain("Mluian");
+    expect(sessionOptionLabel(report({ live: true }))).toContain("running");
+    expect(
+      sessionOptionLabel(report({ kind: "rampage", clerics: [cleric(), cleric()] })),
+    ).toContain("Rampage");
+    expect(sessionKindLabel("rampage")).toBe("Rampage");
+    expect(sessionSlotFormat("rampage")).toBe("letter");
+    expect(sessionSlotFormat("ch")).toBe("number");
+  });
+
+  it("reports on-time share only when beats were measured", () => {
+    expect(onTimeShare(cleric())).toBeCloseTo(0.8, 5);
+    expect(onTimeShare(cleric({ onTime: 0, early: 0, late: 0 }))).toBeNull();
+    expect(formatPercent(0.8)).toBe("80%");
+    expect(formatPercent(null)).toBe("—");
+  });
+
+  it("grades a score by how close to the beat it is", () => {
+    expect(scoreClassName(97)).toBe("score good");
+    expect(scoreClassName(75)).toBe("score ok");
+    expect(scoreClassName(40)).toBe("score bad");
+  });
+
+  it("leads with the score the whole chain earned", () => {
+    const html = sessionScoreHtml(report());
+    expect(html).toContain("92");
+    expect(html).toContain("score good");
+    expect(html).toContain("Chain score");
+    expect(html).toContain("1 cleric");
+    expect(html).toContain("24 casts");
+    expect(sessionScoreHtml(report({ score: 64, clerics: [cleric(), cleric()] }))).toContain(
+      "score bad",
+    );
+  });
+
+  it("summarises a session as labelled facts", () => {
+    const html = sessionSummaryHtml(report());
+    expect(html).toContain("Mluian");
+    expect(html).toContain("3m 12s");
+    expect(html).toContain("Missed turns");
+    expect(sessionSummaryHtml(report({ live: true }))).toContain("Running");
+  });
+
+  it("ranks clerics in a table and marks you", () => {
+    const html = clericTableHtml(
+      report({
+        clerics: [
+          cleric({ rank: 1 }),
+          cleric({
+            rank: 2,
+            player: "Two",
+            isYou: false,
+            slots: [2],
+            avgOffsetSeconds: 0.8,
+            missedTurns: 2,
+            wrongTarget: 1,
+            score: 61,
+          }),
+        ],
+      }),
+    );
+    expect(html).toContain("001");
+    expect(html).toContain("cleric-row is-you");
+    expect(html).toContain("late 0.80s");
+    expect(html).toContain("score bad");
+    expect(clericTableHtml(report({ clerics: [] }))).toContain("No casts");
+  });
+
+  it("uses rampage letters in a rampage report", () => {
+    const html = clericTableHtml(report({ kind: "rampage" }));
+    expect(html).toContain("AAA");
+  });
+
+  it("shows the newest timeline rows first and escapes names", () => {
+    const html = sessionEventsHtml(report());
+    const heal = html.indexOf("Clericone cast");
+    const start = html.indexOf("started the chain");
+    expect(heal).toBeGreaterThan(-1);
+    expect(heal).toBeLessThan(start);
+    expect(html).toContain("late 0.40s");
+    expect(sessionEventsHtml(report({ events: [] }))).toContain("Nothing happened");
+
+    const escaped = sessionEventsHtml(
+      report({
+        events: [
+          {
+            atMs: 1_700_000_000_000,
+            kind: "warning",
+            player: null,
+            number: null,
+            target: null,
+            tank: null,
+            offsetSeconds: null,
+            text: "<script>",
+          },
+        ],
+      }),
+    );
+    expect(escaped).toContain("&lt;script&gt;");
+    expect(escaped).not.toContain("<script>");
+  });
+
+  it("keeps the timeline to the most recent rows", () => {
+    const events = Array.from({ length: 12 }, (_, index) => ({
+      atMs: 1_700_000_000_000 + index * 1_000,
+      kind: "heal" as const,
+      player: "Clericone",
+      number: 1,
+      target: "Mluian",
+      tank: "Mluian",
+      offsetSeconds: null,
+      text: `cast ${index}`,
+    }));
+    const html = sessionEventsHtml(report({ events }), 3);
+    expect(html).toContain("cast 11");
+    expect(html).toContain("cast 9");
+    expect(html).not.toContain("cast 8");
+  });
+});
+
+describe("demo scenario helpers", () => {
+  const scenario = {
+    id: "chain",
+    name: "Cleric chain",
+    description: "Four clerics take numbers.",
+    steps: 24,
+    seconds: 65,
+    configurable: false,
+    clerics: 0,
+    intervalSeconds: 0,
+  };
+  const raid = {
+    ...scenario,
+    id: "raid",
+    name: "Full raid chain",
+    configurable: true,
+    steps: 220,
+    seconds: 480,
+    clerics: 20,
+    intervalSeconds: 2,
+  };
+
+  it("labels a scenario with its length", () => {
+    expect(demoScenarioLabel(scenario)).toBe("Cleric chain · 24 steps · 1m 05s");
+    expect(demoScenarioLabel(raid)).toBe("Full raid chain · set up below");
+  });
+
+  it("clamps a roster to something Alfred will run", () => {
+    expect(clampDemoOptions({})).toEqual({ clerics: 8, maxClerics: 20, minutes: 4 });
+    expect(clampDemoOptions({ clerics: 99, maxClerics: 99, minutes: 900 })).toEqual({
+      clerics: 24,
+      maxClerics: 24,
+      minutes: 30,
+    });
+    expect(clampDemoOptions({ clerics: 0, maxClerics: 0, minutes: 0 })).toEqual({
+      clerics: 1,
+      maxClerics: 1,
+      minutes: 1,
+    });
+    // A roster cannot build down to fewer than the clerics already standing there.
+    expect(clampDemoOptions({ clerics: 12, maxClerics: 4 }).maxClerics).toBe(12);
+    expect(clampDemoOptions({ clerics: Number.NaN }).clerics).toBe(8);
+    expect(clampDemoOptions({ clerics: 7.4 }).clerics).toBe(7);
+  });
+
+  it("knows how fast a roster can chain a 10s heal", () => {
+    expect(fastestInterval(1)).toBe(10);
+    expect(fastestInterval(3)).toBeCloseTo(3.4, 5);
+    expect(fastestInterval(4)).toBe(2.5);
+    expect(fastestInterval(10)).toBe(1);
+    // The beat never goes under a second however many clerics pile on.
+    expect(fastestInterval(20)).toBe(1);
+    expect(fastestInterval(24)).toBe(1);
+    expect(fastestInterval(0)).toBe(10);
+  });
+
+  it("explains the pace, the latecomers, and when your turn comes back", () => {
+    const growing = demoPaceHint({ clerics: 8, maxClerics: 20, minutes: 4 });
+    expect(growing).toContain("8 clerics split a 10s CH 1.3s apart");
+    expect(growing).toContain("12 more take numbers mid-pull");
+    expect(growing).toContain("chain is 20 at 1s");
+    expect(growing).toContain("every 20s");
+    const settled = demoPaceHint({ clerics: 3, maxClerics: 3, minutes: 2 });
+    expect(settled).toContain("3.4s apart");
+    expect(settled).toContain("nobody else shows up");
+  });
+
+  it("shows how long a run takes at the chosen speed", () => {
+    expect(demoLengthLabel(raid, 1)).toBe("220 lines, about 8m 00s.");
+    expect(demoLengthLabel(raid, 4)).toContain("2m 00s at 4×");
+  });
+
+  it("describes where the run is", () => {
+    expect(demoProgressLabel({ running: false, step: 0, total: 0 })).toContain("Pick");
+    expect(demoProgressLabel({ running: false, step: 0, total: 24 })).toContain("Ready");
+    expect(demoProgressLabel({ running: true, step: 4, total: 24 })).toBe("Step 4 of 24…");
+    expect(demoProgressLabel({ running: false, step: 24, total: 24 })).toBe(
+      "Finished 24 steps.",
+    );
+  });
+
+  it("renders a log entry with the line Alfred was fed", () => {
+    const html = demoEntryHtml({
+      atMs: 1_700_000_000_000,
+      step: 4,
+      total: 24,
+      note: "Portlia follows",
+      line: "[Fri Sep 18 16:27:00 2026] Portlia shouts, 'GG 002 CH -- Mluian'",
+      applied: true,
+      level: "line",
+    });
+    expect(html).toContain("4/24");
+    expect(html).toContain("Portlia follows");
+    expect(html).toContain("GG 002 CH -- Mluian");
+    expect(html).not.toContain("ignored by Alfred");
+
+    const ignored = demoEntryHtml({
+      atMs: 1_700_000_000_000,
+      step: 5,
+      total: 24,
+      note: "Chatter",
+      line: "[Fri Sep 18 16:27:00 2026] Portlia shouts, 'hello'",
+      applied: false,
+      level: "skip",
+    });
+    expect(ignored).toContain("ignored by Alfred");
+
+    const done = demoEntryHtml({
+      atMs: 1_700_000_000_000,
+      step: 24,
+      total: 24,
+      note: "Demo finished.",
+      line: "",
+      applied: false,
+      level: "done",
+    });
+    expect(done).toContain("is-done");
+    expect(done).not.toContain("24/24");
   });
 });

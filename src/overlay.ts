@@ -6,6 +6,7 @@ import {
   clampOverlayOpacity,
   liveSnapshot,
   overlayPanelHtml,
+  primaryChain,
   type ChainSnapshot,
 } from "./logic";
 
@@ -42,9 +43,13 @@ function applyChrome() {
 
 function render() {
   const now = Date.now();
+  const chain = liveSnapshot(raid?.chain ?? null, now);
+  const rampage = liveSnapshot(raid?.rampage ?? null, now);
+  // The chain you are on goes on top.
+  const ch = overlayPanelHtml(chain, "CH");
+  const rch = overlayPanelHtml(rampage, "Rampage");
   $("overlay-chains").innerHTML =
-    overlayPanelHtml(liveSnapshot(raid?.chain ?? null, now), "CH") +
-    overlayPanelHtml(liveSnapshot(raid?.rampage ?? null, now), "Rampage");
+    primaryChain(chain, rampage).kind === "rampage" ? rch + ch : ch + rch;
 }
 
 window.addEventListener("DOMContentLoaded", () => {

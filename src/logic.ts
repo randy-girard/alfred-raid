@@ -30,7 +30,13 @@ export type TankSnapshot = {
   isYou: boolean;
 };
 
-export type WarningKind = "other" | "slotTaken" | "wrongTarget" | "autoTake" | "startChain";
+export type WarningKind =
+  | "other"
+  | "slotTaken"
+  | "wrongTarget"
+  | "autoTake"
+  | "startChain"
+  | "pace";
 
 export type ChainSnapshot = {
   tank: string | null;
@@ -332,6 +338,16 @@ export function isAlertEnabled(opts: {
   return true;
 }
 
+/// Urgent reads as danger, a pace change reads as news, everything else warns.
+export function alertBannerClass(
+  kind: WarningKind | null | undefined,
+  urgent: boolean,
+): string {
+  if (urgent) return "banner danger dismissable";
+  if (kind === "pace") return "banner pace dismissable";
+  return "banner warn dismissable";
+}
+
 export function shouldSpeakAutoTake(opts: {
   enabled: boolean;
   kind: WarningKind | null | undefined;
@@ -437,6 +453,117 @@ export function slotClassName(slot: SlotSnapshot): string {
     .join(" ");
 }
 
+/// How many clerics of another tank's rotation the side panels show.
+export const SIDE_CHAIN_CLERICS = 3;
+
+export type SideChain = {
+  tank: string;
+  /// "CH" or "RCH", so a rampage rotation is never mistaken for a cleric one.
+  kind: string;
+  format: "number" | "letter";
+  intervalSeconds: number;
+  state: string;
+  clerics: SlotSnapshot[];
+  waiting: number;
+};
+
+/// Rampage chains use letters, cleric chains use numbers.
+export function chainKindLabel(live: ChainSnapshot): string {
+  return live.slotFormat === "letter" ? "RCH" : "CH";
+}
+
+/// Every rotation in one snapshot, trimmed to the next few clerics. Skipped
+/// clerics are left out: they are not up next. Your own rotation is left out
+/// too unless you ask for it, since it belongs in the main list.
+export function sideChains(
+  live: ChainSnapshot | null,
+  limit: number = SIDE_CHAIN_CLERICS,
+  opts: { includeYours?: boolean } = {},
+): SideChain[] {
+  if (!live) return [];
+  const groups = tankGroups(live.slots);
+  if (groups.size === 0) return [];
+  if (groups.size <= 1 && !opts.includeYours) return [];
+  const yours = opts.includeYours ? null : yourTankName(live);
+  const names = live.tanks.map((tank) => tank.name).filter((name) => groups.has(name));
+  for (const name of groups.keys()) {
+    if (!names.includes(name)) names.push(name);
+  }
+  return names
+    .filter((name) => name !== yours)
+    .map((name) => {
+      const group = groups.get(name) ?? [];
+      const queue = group.filter((slot) => !slot.skipped);
+      const tank = live.tanks.find((item) => item.name === name);
+      return {
+        tank: name,
+        kind: chainKindLabel(live),
+        format: live.slotFormat,
+        intervalSeconds: tank?.intervalSeconds ?? live.intervalSeconds,
+        state: chainStateLabel({ running: tank?.running ?? false, armed: tank?.armed }),
+        clerics: queue.slice(0, limit),
+        waiting: Math.max(0, queue.length - limit),
+      };
+    })
+    .filter((side) => side.clerics.length > 0);
+}
+
+/// The chain you are on, which is the one that gets the big list. If you are
+/// not on either, whichever has clerics on it wins, cleric chain first.
+export function primaryChain(
+  chain: ChainSnapshot | null,
+  rampage: ChainSnapshot | null,
+): { live: ChainSnapshot | null; kind: "chain" | "rampage" } {
+  const onChain = yourSlotNumber(chain) != null;
+  const onRampage = yourSlotNumber(rampage) != null;
+  if (onRampage && !onChain) return { live: rampage, kind: "rampage" };
+  if (onChain) return { live: chain, kind: "chain" };
+  if ((chain?.slots.length ?? 0) > 0) return { live: chain, kind: "chain" };
+  if ((rampage?.slots.length ?? 0) > 0) return { live: rampage, kind: "rampage" };
+  return { live: chain, kind: "chain" };
+}
+
+/// Everything that is not the main list: the other tanks on your own chain,
+/// then every rotation on the chain you are not running.
+export function chainRail(
+  primary: ChainSnapshot | null,
+  secondary: ChainSnapshot | null,
+  limit: number = SIDE_CHAIN_CLERICS,
+): SideChain[] {
+  return [
+    ...sideChains(primary, limit),
+    ...sideChains(secondary, limit, { includeYours: true }),
+  ];
+}
+
+export function sideChainsHtml(sides: SideChain[]): string {
+  return sides
+    .map((side) => {
+      const rows = side.clerics
+        .map((slot) => {
+          const eta = slot.remainingSeconds > 0 ? `${slot.remainingSeconds.toFixed(1)}s` : "—";
+          const flag = slot.isNext ? " is-next" : slot.isCurrent ? " is-current" : "";
+          const you = slot.isYou ? " is-you" : "";
+          return `<li class="side-slot${flag}${you}">
+        <span class="num">${formatSlot(slot.number, side.format)}</span>
+        <span class="player">${escapeHtml(slot.player)}</span>
+        <span class="eta">${eta}</span>
+      </li>`;
+        })
+        .join("");
+      const waiting = side.waiting > 0 ? `<small class="side-more">+${side.waiting} more</small>` : "";
+      return `<section class="side-chain">
+      <header>
+        <strong>${escapeHtml(side.tank)}</strong>
+        <small>${escapeHtml(side.kind)} · ${escapeHtml(side.state)} · ${side.intervalSeconds.toFixed(1)}s</small>
+      </header>
+      <ol>${rows}</ol>
+      ${waiting}
+    </section>`;
+    })
+    .join("");
+}
+
 export function clampOverlayOpacity(value: number): number {
   if (!Number.isFinite(value)) return 0.85;
   return Math.min(1, Math.max(0.25, value));
@@ -458,12 +585,16 @@ export function overlayPanelHtml(
     youAreNextIn: live?.youAreNextIn,
   });
   const youLine = showYou
-    ? `<div class="overlay-you">Cast in ${(eta ?? 0).toFixed(1)}s</div>`
+    ? `<div class="overlay-you"><span class="overlay-you-slot">${escapeHtml(
+        yourSlotLabel(live),
+      )}</span> Cast in ${(eta ?? 0).toFixed(1)}s</div>`
     : "";
+  // The overlay is small, so it only ever shows your own rotation.
+  const mine = live ? yourTankSlots(live) : [];
   const slots =
-    !live || live.slots.length === 0
+    !live || mine.length === 0
       ? `<p class="overlay-empty">Waiting</p>`
-      : live.slots
+      : mine
           .map((slot) => {
             const width = Math.round(slot.progress * 1000) / 10;
             const next = slot.isNext ? " Next" : "";
@@ -485,6 +616,329 @@ export function overlayPanelHtml(
   ${youLine}
   <div class="overlay-slots">${slots}</div>
 </section>`;
+}
+
+export type SessionEventKind =
+  | "heal"
+  | "start"
+  | "stop"
+  | "reset"
+  | "claim"
+  | "skip"
+  | "back"
+  | "move"
+  | "tank"
+  | "interval"
+  | "wrongTarget"
+  | "warning";
+
+export type SessionEvent = {
+  atMs: number;
+  kind: SessionEventKind;
+  player: string | null;
+  isYou: boolean;
+  number: number | null;
+  target: string | null;
+  tank: string | null;
+  offsetSeconds: number | null;
+  text: string;
+};
+
+export type ClericReport = {
+  rank: number;
+  player: string;
+  slots: number[];
+  heals: number;
+  onTime: number;
+  early: number;
+  late: number;
+  missedTurns: number;
+  wrongTarget: number;
+  skips: number;
+  isYou: boolean;
+  avgOffsetSeconds: number | null;
+  worstLateSeconds: number | null;
+  score: number;
+};
+
+export type SessionReport = {
+  id: number;
+  kind: "ch" | "rampage";
+  live: boolean;
+  startedAtMs: number;
+  endedAtMs: number | null;
+  durationSeconds: number;
+  tank: string | null;
+  totalHeals: number;
+  missedTurns: number;
+  wrongTarget: number;
+  warnings: number;
+  avgOffsetSeconds: number | null;
+  score: number;
+  clerics: ClericReport[];
+  events: SessionEvent[];
+};
+
+export function sessionSlotFormat(kind: SessionReport["kind"]): "number" | "letter" {
+  return kind === "rampage" ? "letter" : "number";
+}
+
+export function sessionKindLabel(kind: SessionReport["kind"]): string {
+  return kind === "rampage" ? "Rampage" : "CH";
+}
+
+export function formatDuration(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds <= 0) return "0s";
+  const total = Math.round(seconds);
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const secs = total % 60;
+  if (hours > 0) return `${hours}h ${String(minutes).padStart(2, "0")}m`;
+  if (minutes > 0) return `${minutes}m ${String(secs).padStart(2, "0")}s`;
+  return `${secs}s`;
+}
+
+export function formatClockTime(ms: number): string {
+  if (!Number.isFinite(ms) || ms <= 0) return "—";
+  return new Date(ms).toLocaleTimeString([], {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+export function formatLogTime(ms: number): string {
+  if (!Number.isFinite(ms) || ms <= 0) return "—";
+  return new Date(ms).toLocaleTimeString([], {
+    hour12: false,
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
+export function sessionOptionLabel(report: SessionReport): string {
+  const parts = [
+    `Score ${Math.round(report.score)}`,
+    sessionKindLabel(report.kind),
+    formatClockTime(report.startedAtMs),
+    report.live ? "running" : formatDuration(report.durationSeconds),
+    `${report.clerics.length} cleric${report.clerics.length === 1 ? "" : "s"}`,
+  ];
+  if (report.tank) parts.push(report.tank);
+  return parts.join(" · ");
+}
+
+export function onTimeShare(cleric: ClericReport): number | null {
+  const rated = cleric.onTime + cleric.early + cleric.late;
+  if (rated === 0) return null;
+  return cleric.onTime / rated;
+}
+
+export function formatPercent(share: number | null): string {
+  if (share == null) return "—";
+  return `${Math.round(share * 100)}%`;
+}
+
+export function scoreClassName(score: number): string {
+  if (score >= 90) return "score good";
+  if (score >= 70) return "score ok";
+  return "score bad";
+}
+
+export function sessionScoreHtml(report: SessionReport): string {
+  const score = Math.round(report.score);
+  return `<div class="session-score">
+    <span class="${scoreClassName(report.score)} session-score-badge">${score}</span>
+    <div class="session-score-copy">
+      <strong>Chain score</strong>
+      <small>${escapeHtml(sessionKindLabel(report.kind))} · ${escapeHtml(
+        report.clerics.length === 1 ? "1 cleric" : `${report.clerics.length} clerics`,
+      )} · ${escapeHtml(String(report.totalHeals))} casts</small>
+    </div>
+  </div>`;
+}
+
+export function sessionSummaryHtml(report: SessionReport): string {
+  const facts: Array<[string, string]> = [
+    ["Chain", sessionKindLabel(report.kind)],
+    ["Tank", report.tank || "—"],
+    ["Started", formatClockTime(report.startedAtMs)],
+    ["Length", report.live ? "Running" : formatDuration(report.durationSeconds)],
+    ["Casts", String(report.totalHeals)],
+    ["Missed turns", String(report.missedTurns)],
+    ["Wrong target", String(report.wrongTarget)],
+    ["Avg offset", formatOffset(report.avgOffsetSeconds) || "on time"],
+  ];
+  return facts
+    .map(
+      ([label, value]) =>
+        `<div><span class="k">${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`,
+    )
+    .join("");
+}
+
+export function clericTableHtml(report: SessionReport): string {
+  if (report.clerics.length === 0) {
+    return `<p class="empty">No casts were recorded in this session.</p>`;
+  }
+  const format = sessionSlotFormat(report.kind);
+  const rows = report.clerics
+    .map((cleric) => {
+      const slots = cleric.slots.length
+        ? cleric.slots.map((slot) => formatSlot(slot, format)).join(" ")
+        : "—";
+      const offset = formatOffset(cleric.avgOffsetSeconds);
+      const you = cleric.isYou ? " is-you" : "";
+      return `<tr class="cleric-row${you}">
+        <td class="rank">${cleric.rank}</td>
+        <td class="who"><strong>${escapeHtml(cleric.player)}</strong><small>${escapeHtml(slots)}</small></td>
+        <td>${cleric.heals}</td>
+        <td>${escapeHtml(formatPercent(onTimeShare(cleric)))}</td>
+        <td class="${offsetClassName(cleric.avgOffsetSeconds)}">${escapeHtml(offset || "—")}</td>
+        <td>${cleric.missedTurns}</td>
+        <td>${cleric.wrongTarget}</td>
+        <td><span class="${scoreClassName(cleric.score)}">${Math.round(cleric.score)}</span></td>
+      </tr>`;
+    })
+    .join("");
+  return `<table class="cleric-table">
+    <thead>
+      <tr>
+        <th>#</th><th>Cleric</th><th>Casts</th><th>On time</th><th>Avg</th><th>Missed</th><th>Wrong</th><th>Score</th>
+      </tr>
+    </thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+
+export function sessionEventsHtml(report: SessionReport, limit = 150): string {
+  const events = report.events.slice(-limit).reverse();
+  if (events.length === 0) {
+    return `<p class="empty">Nothing happened in this session yet.</p>`;
+  }
+  const format = sessionSlotFormat(report.kind);
+  return events
+    .map((event) => {
+      const slot = event.number != null ? formatSlot(event.number, format) : "";
+      const offset = event.kind === "heal" ? formatOffset(event.offsetSeconds) : "";
+      const offsetHtml = offset
+        ? `<span class="timeline-offset ${offsetClassName(event.offsetSeconds)}">${escapeHtml(offset)}</span>`
+        : "";
+      return `<li class="timeline-row is-${escapeHtml(event.kind)}">
+        <span class="timeline-time">${escapeHtml(formatLogTime(event.atMs))}</span>
+        <span class="timeline-slot">${escapeHtml(slot)}</span>
+        <span class="timeline-text">${escapeHtml(event.text)}</span>
+        ${offsetHtml}
+      </li>`;
+    })
+    .join("");
+}
+
+export type DemoScenario = {
+  id: string;
+  name: string;
+  description: string;
+  steps: number;
+  seconds: number;
+  configurable: boolean;
+  clerics: number;
+  intervalSeconds: number;
+};
+
+export type DemoOptions = {
+  clerics: number;
+  maxClerics: number;
+  minutes: number;
+};
+
+export const DEMO_CAST_SECONDS = 10;
+
+/// Matches the Rust floor: a demo chain never beats faster than a second.
+export const DEMO_MIN_INTERVAL_SECONDS = 1;
+
+/// Mirrors the Rust clamps so the page cannot ask for a chain Alfred will not run.
+export function clampDemoOptions(options: Partial<DemoOptions>): DemoOptions {
+  const clamp = (value: number, min: number, max: number, fallback: number) =>
+    Number.isFinite(value) ? Math.min(max, Math.max(min, value)) : fallback;
+  const clerics = Math.round(clamp(options.clerics ?? 8, 1, 24, 8));
+  return {
+    clerics,
+    maxClerics: Math.round(clamp(options.maxClerics ?? 20, clerics, 24, Math.max(clerics, 20))),
+    minutes: Math.round(clamp(options.minutes ?? 4, 1, 30, 4)),
+  };
+}
+
+export function fastestInterval(clerics: number): number {
+  if (!Number.isFinite(clerics) || clerics <= 0) return DEMO_CAST_SECONDS;
+  const split = Math.ceil((DEMO_CAST_SECONDS / clerics) * 10) / 10;
+  return Math.max(DEMO_MIN_INTERVAL_SECONDS, split);
+}
+
+export function demoPaceHint(options: DemoOptions): string {
+  const opening = fastestInterval(options.clerics);
+  const full = fastestInterval(options.maxClerics);
+  const turn = formatDuration(options.maxClerics * full);
+  const joiners = options.maxClerics - options.clerics;
+  const start = `${options.clerics} clerics split a ${DEMO_CAST_SECONDS}s CH ${opening}s apart`;
+  const middle =
+    joiners === 0
+      ? "and nobody else shows up"
+      : `, then ${joiners} more take numbers mid-pull until the chain is ${options.maxClerics} at ${full}s`;
+  return `${start}${middle}. Your turn comes around every ${turn} on a full chain, and clerics skip out and come back while it runs.`;
+}
+
+export function demoLengthLabel(scenario: DemoScenario, speed: number): string {
+  const real = formatDuration(scenario.seconds);
+  if (speed === 1) return `${scenario.steps} lines, about ${real}.`;
+  return `${scenario.steps} lines, about ${real} in real time — ${formatDuration(
+    scenario.seconds / speed,
+  )} at ${speed}×.`;
+}
+
+export type DemoLogEntry = {
+  atMs: number;
+  step: number;
+  total: number;
+  note: string;
+  line: string;
+  applied: boolean;
+  level: "line" | "skip" | "warn" | "done";
+};
+
+export function demoScenarioLabel(scenario: DemoScenario): string {
+  if (scenario.configurable) return `${scenario.name} · set up below`;
+  return `${scenario.name} · ${scenario.steps} steps · ${formatDuration(scenario.seconds)}`;
+}
+
+export function demoProgressLabel(opts: {
+  running: boolean;
+  step: number;
+  total: number;
+}): string {
+  if (opts.total === 0) return "Pick a scenario.";
+  if (!opts.running) {
+    return opts.step >= opts.total && opts.step > 0
+      ? `Finished ${opts.total} steps.`
+      : "Ready. Press Start and watch the Alfred window.";
+  }
+  return `Step ${opts.step} of ${opts.total}…`;
+}
+
+export function demoEntryHtml(entry: DemoLogEntry): string {
+  const step = entry.level === "done" ? "" : `${entry.step}/${entry.total}`;
+  const line = entry.line
+    ? `<code class="demo-line">${escapeHtml(entry.line)}</code>`
+    : "";
+  const ignored =
+    entry.level === "skip" ? `<span class="demo-flag">ignored by Alfred</span>` : "";
+  return `<li class="demo-entry is-${escapeHtml(entry.level)}">
+    <div class="demo-entry-head">
+      <span class="demo-time">${escapeHtml(formatLogTime(entry.atMs))}</span>
+      <span class="demo-step">${escapeHtml(step)}</span>
+      <span class="demo-note">${escapeHtml(entry.note)}</span>
+    </div>
+    ${line}${ignored}
+  </li>`;
 }
 
 export function updateAvailableMessage(opts: {
@@ -675,14 +1129,48 @@ function applySchedule(snapshot: ChainSnapshot, now: number): ChainSnapshot {
   };
 }
 
-function applyAllTanks(snapshot: ChainSnapshot, now: number): ChainSnapshot {
+/// The tank whose rotation is yours, by name. Falls back to the tank on your
+/// own slot, then to the chain's tank.
+export function yourTankName(snapshot: ChainSnapshot): string {
+  if (snapshot.yourTank) return snapshot.yourTank;
+  const you = snapshot.slots.find((slot) => slot.isYou);
+  return you?.tank || snapshot.tank || "";
+}
+
+export function tankGroups(slots: SlotSnapshot[]): Map<string, SlotSnapshot[]> {
   const groups = new Map<string, SlotSnapshot[]>();
-  for (const slot of snapshot.slots) {
+  for (const slot of slots) {
     const key = slot.tank || "";
     const list = groups.get(key) ?? [];
     list.push(slot);
     groups.set(key, list);
   }
+  return groups;
+}
+
+/// Your own number on the chain, or null when you are not on it.
+export function yourSlotNumber(live: ChainSnapshot | null): number | null {
+  const you = live?.slots.find((slot) => slot.isYou);
+  return you?.number ?? null;
+}
+
+/// Your number for the header, with a note when you are sitting out.
+export function yourSlotLabel(live: ChainSnapshot | null): string {
+  const you = live?.slots.find((slot) => slot.isYou);
+  if (!you) return "—";
+  const slot = formatSlot(you.number, live?.slotFormat ?? "number");
+  return you.skipped ? `${slot} (out)` : slot;
+}
+
+/// The slots on your own rotation, which is what the big list shows.
+export function yourTankSlots(live: ChainSnapshot): SlotSnapshot[] {
+  const groups = tankGroups(live.slots);
+  if (groups.size <= 1) return live.slots;
+  return groups.get(yourTankName(live)) ?? live.slots;
+}
+
+function applyAllTanks(snapshot: ChainSnapshot, now: number): ChainSnapshot {
+  const groups = tankGroups(snapshot.slots);
   const slots: SlotSnapshot[] = [];
   for (const [name, group] of groups) {
     const tank = snapshot.tanks.find((item) => item.name === name);
@@ -718,15 +1206,24 @@ function applyAllTanks(snapshot: ChainSnapshot, now: number): ChainSnapshot {
       ...rotateQueue(scheduled, tank?.running ?? false, current, next),
     );
   }
+  // Your own rotation still drives the banner and the meta line, even though
+  // every tank was scheduled on its own clock.
+  const yours = yourTankName(snapshot);
+  const mine = yours ? slots.filter((slot) => (slot.tank || "") === yours) : [];
+  const you = mine.find((slot) => slot.isYou && !slot.skipped);
+  const youCastIn = you ? you.remainingSeconds : null;
+  const yourClock = snapshot.tanks.find((tank) => tank.name === yours);
   return {
     ...snapshot,
     slots,
-    currentNumber: null,
-    nextNumber: null,
-    youCastIn: null,
-    youAreNextIn: null,
+    currentNumber: mine.find((slot) => slot.isCurrent)?.number ?? null,
+    nextNumber: mine.find((slot) => slot.isNext)?.number ?? null,
+    youCastIn,
+    youAreNextIn: you?.isNext ? youCastIn : null,
     nowMs: now,
-    running: snapshot.tanks.some((tank) => tank.running),
+    running: snapshot.yourTank
+      ? (yourClock?.running ?? snapshot.running)
+      : snapshot.tanks.some((tank) => tank.running),
   };
 }
 
@@ -735,7 +1232,11 @@ export function liveSnapshot(
   now: number,
 ): ChainSnapshot | null {
   if (!snapshot) return null;
-  const splitView = !snapshot.yourTank && (snapshot.tanks?.length ?? 0) > 1;
+  // More than one tank in the slots means more than one clock to honour, so
+  // each rotation is scheduled on its own.
+  const splitView =
+    tankGroups(snapshot.slots).size > 1 ||
+    (!snapshot.yourTank && (snapshot.tanks?.length ?? 0) > 1);
   const live = splitView
     ? applyAllTanks(snapshot, now)
     : snapshot.running && snapshot.startedAtMs != null

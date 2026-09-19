@@ -1,20 +1,24 @@
 mod chain;
 mod config;
+mod demo;
 mod engine;
 mod log_watcher;
 mod parser;
+mod report;
 
-use chain::{ChainSnapshot, ChainState};
+use chain::{ChainEvent, ChainSnapshot, ChainState};
 use config::{geometry_on_a_monitor, AppConfig, Rect, WindowGeometry};
+use demo::{DemoOptions, DemoScenario};
 use engine::apply_lines;
 use log_watcher::{spawn_watcher, EqDirectoryProbe, WatchEvent, WatchStatus, WatcherHandle};
-use parser::{format_test_log_line, Parser, TestChannel};
+use parser::{format_test_log_line, ChainCommand, Parser, TestChannel};
+use report::{Recorder, SessionKind, SessionReport};
 use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{
@@ -30,6 +34,14 @@ struct AppState {
     status: Mutex<WatchStatus>,
     watcher: Mutex<Option<WatcherHandle>>,
     window_persist: WindowPersist,
+    report: Mutex<Recorder>,
+    demo: DemoRun,
+}
+
+#[derive(Default)]
+struct DemoRun {
+    running: AtomicBool,
+    stop: AtomicBool,
 }
 
 struct WindowPersist {
@@ -77,8 +89,17 @@ impl AppState {
             status: Mutex::new(WatchStatus::idle(None)),
             watcher: Mutex::new(None),
             window_persist: WindowPersist::default(),
+            report: Mutex::new(Recorder::load()),
+            demo: DemoRun::default(),
         }
     }
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 #[tauri::command]
@@ -169,19 +190,6 @@ fn save_settings(
             .map_err(|e| e.to_string())?
             .interval_seconds = config.interval_seconds;
     }
-    if let Some(v) = patch.cast_time_seconds {
-        config.cast_time_seconds = v.max(0.1);
-        state
-            .chain
-            .lock()
-            .map_err(|e| e.to_string())?
-            .cast_time_seconds = config.cast_time_seconds;
-        state
-            .rampage
-            .lock()
-            .map_err(|e| e.to_string())?
-            .cast_time_seconds = config.cast_time_seconds;
-    }
     if let Some(v) = patch.tail_poll_ms {
         config.tail_poll_ms = v.max(50);
         restart_watch = true;
@@ -261,6 +269,12 @@ fn inject_test_line(
     message: String,
 ) -> Result<InjectResult, String> {
     let line = format_test_log_line(&speaker, channel, &message)?;
+    let changed = apply_log_line(&app, state.inner(), &line)?;
+    Ok(InjectResult { line, changed })
+}
+
+/// Runs one line through the same path a tailed log line takes.
+fn apply_log_line(app: &AppHandle, state: &AppState, line: &str) -> Result<bool, String> {
     let character = state
         .status
         .lock()
@@ -275,17 +289,255 @@ fn inject_test_line(
         &mut chain,
         &mut rampage,
         character.as_deref(),
-        std::slice::from_ref(&line),
+        std::slice::from_ref(&line.to_string()),
     );
     let snap = RaidSnapshot {
         chain: chain.snapshot(),
         rampage: rampage.snapshot(),
     };
+    let chain_events = chain.take_events();
+    let rampage_events = rampage.take_events();
     drop(parser);
     drop(chain);
     drop(rampage);
     let _ = app.emit("raid-updated", &snap);
-    Ok(InjectResult { line, changed })
+    record_events(app, state, chain_events, rampage_events);
+    Ok(changed)
+}
+
+/// Clears both chains and closes whatever session they were feeding. The demo
+/// uses this so a scripted pull never leaves clerics on the panel behind it.
+fn clear_chains(app: &AppHandle, state: &AppState, who: &str) {
+    let (Ok(mut chain), Ok(mut rampage)) = (state.chain.lock(), state.rampage.lock()) else {
+        return;
+    };
+    chain.apply_command(ChainCommand::ResetChain, who.to_string());
+    rampage.apply_command(ChainCommand::ResetChain, who.to_string());
+    let snap = RaidSnapshot {
+        chain: chain.snapshot(),
+        rampage: rampage.snapshot(),
+    };
+    let chain_events = chain.take_events();
+    let rampage_events = rampage.take_events();
+    drop(chain);
+    drop(rampage);
+    let _ = app.emit("raid-updated", &snap);
+    record_events(app, state, chain_events, rampage_events);
+}
+
+fn record_events(
+    app: &AppHandle,
+    state: &AppState,
+    chain: Vec<ChainEvent>,
+    rampage: Vec<ChainEvent>,
+) {
+    let Ok(mut recorder) = state.report.lock() else {
+        return;
+    };
+    let mut changed = recorder.record(SessionKind::Ch, chain);
+    changed |= recorder.record(SessionKind::Rampage, rampage);
+    if !changed {
+        return;
+    }
+    recorder.save_if_needed();
+    drop(recorder);
+    let _ = app.emit("sessions-changed", ());
+}
+
+#[tauri::command]
+fn get_session_reports(state: State<AppState>) -> Vec<SessionReport> {
+    let Ok(mut recorder) = state.report.lock() else {
+        return Vec::new();
+    };
+    if recorder.close_idle_at(now_ms()) {
+        recorder.save_if_needed();
+    }
+    recorder.reports()
+}
+
+#[tauri::command]
+fn clear_sessions(state: State<AppState>, app: AppHandle) -> Result<(), String> {
+    let mut recorder = state.report.lock().map_err(|e| e.to_string())?;
+    recorder.clear();
+    recorder.save_if_needed();
+    drop(recorder);
+    let _ = app.emit("sessions-changed", ());
+    Ok(())
+}
+
+#[tauri::command]
+fn demo_scenarios() -> Vec<DemoScenario> {
+    demo::scenarios()
+}
+
+#[tauri::command]
+fn demo_preview(scenario: String, options: Option<DemoOptions>) -> DemoScenario {
+    demo::describe(&scenario, options.unwrap_or_default())
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DemoProgress {
+    running: bool,
+    scenario: String,
+    step: usize,
+    total: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DemoLogEntry {
+    at_ms: u64,
+    step: usize,
+    total: usize,
+    note: String,
+    line: String,
+    applied: bool,
+    level: String,
+}
+
+#[tauri::command]
+fn stop_demo(state: State<AppState>) {
+    state.demo.stop.store(true, Ordering::SeqCst);
+}
+
+#[tauri::command]
+fn start_demo(
+    state: State<AppState>,
+    app: AppHandle,
+    scenario: String,
+    speed: f64,
+    options: Option<DemoOptions>,
+) -> Result<(), String> {
+    let steps = demo::scenario_steps_with(&scenario, options.unwrap_or_default());
+    if steps.is_empty() {
+        return Err(format!("Unknown demo scenario {scenario}."));
+    }
+    if state.demo.running.swap(true, Ordering::SeqCst) {
+        return Err("A demo is already running.".into());
+    }
+    state.demo.stop.store(false, Ordering::SeqCst);
+
+    let speed = if speed.is_finite() {
+        speed.clamp(0.25, 4.0)
+    } else {
+        1.0
+    };
+    let total = steps.len();
+    let app = app.clone();
+    let label = scenario.clone();
+    thread::spawn(move || {
+        let emit_state = |step: usize, running: bool| {
+            let _ = app.emit(
+                "demo-state",
+                DemoProgress {
+                    running,
+                    scenario: label.clone(),
+                    step,
+                    total,
+                },
+            );
+        };
+        let emit_log = |entry: DemoLogEntry| {
+            let _ = app.emit("demo-log", entry);
+        };
+        emit_state(0, true);
+        // A scripted pull starts on empty panels, not on the last one's leftovers.
+        if let Some(state) = app.try_state::<AppState>() {
+            clear_chains(&app, state.inner(), "Demo");
+        }
+        let mut stopped = false;
+        for (index, step) in steps.iter().enumerate() {
+            let delay = (step.delay_ms as f64 / speed).round() as u64;
+            if !sleep_unless_stopped(&app, delay) {
+                stopped = true;
+                break;
+            }
+            let (line, applied, level) =
+                match format_test_log_line(&step.speaker, step.channel, &step.message) {
+                    Ok(line) => {
+                        let applied = app
+                            .try_state::<AppState>()
+                            .map(|state| apply_log_line(&app, state.inner(), &line))
+                            .unwrap_or(Ok(false))
+                            .unwrap_or(false);
+                        (line, applied, if applied { "line" } else { "skip" })
+                    }
+                    Err(err) => (err, false, "warn"),
+                };
+            emit_log(DemoLogEntry {
+                at_ms: now_ms(),
+                step: index + 1,
+                total,
+                note: step.note.clone(),
+                line,
+                applied,
+                level: level.into(),
+            });
+            emit_state(index + 1, true);
+        }
+        if stopped {
+            if let Some(state) = app.try_state::<AppState>() {
+                clear_chains(&app, state.inner(), "Demo");
+            }
+        }
+        emit_log(DemoLogEntry {
+            at_ms: now_ms(),
+            step: total,
+            total,
+            note: if stopped {
+                "Demo stopped. The chain is cleared.".into()
+            } else {
+                "Demo finished. The panels keep the last state — run !reset-chain to clear them."
+                    .into()
+            },
+            line: String::new(),
+            applied: false,
+            level: "done".into(),
+        });
+        emit_state(total, false);
+        if let Some(state) = app.try_state::<AppState>() {
+            state.demo.running.store(false, Ordering::SeqCst);
+            state.demo.stop.store(false, Ordering::SeqCst);
+        }
+    });
+    Ok(())
+}
+
+/// Sleeps in slices so Stop takes effect right away instead of at the next step.
+fn sleep_unless_stopped(app: &AppHandle, delay_ms: u64) -> bool {
+    let mut slept = 0;
+    while slept < delay_ms {
+        if app
+            .try_state::<AppState>()
+            .is_some_and(|state| state.demo.stop.load(Ordering::SeqCst))
+        {
+            return false;
+        }
+        let slice = (delay_ms - slept).min(50);
+        thread::sleep(Duration::from_millis(slice));
+        slept += slice;
+    }
+    !app.try_state::<AppState>()
+        .is_some_and(|state| state.demo.stop.load(Ordering::SeqCst))
+}
+
+#[tauri::command]
+async fn open_demo(app: AppHandle) -> Result<(), String> {
+    if let Some(existing) = app.get_webview_window("demo") {
+        let _ = existing.show();
+        let _ = existing.unminimize();
+        let _ = existing.set_focus();
+        return Ok(());
+    }
+    WebviewWindowBuilder::new(&app, "demo", WebviewUrl::App("demo.html".into()))
+        .title("Alfred — Demo scenario")
+        .inner_size(520.0, 780.0)
+        .min_inner_size(420.0, 460.0)
+        .resizable(true)
+        .build()
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -398,7 +650,6 @@ struct SettingsPatch {
     metronome_enabled: Option<bool>,
     sound_lead_seconds: Option<f64>,
     interval_seconds: Option<f64>,
-    cast_time_seconds: Option<f64>,
     tail_poll_ms: Option<u64>,
     setup_complete: Option<bool>,
     chain_tag: Option<String>,
@@ -479,21 +730,26 @@ fn start_watcher(app: &AppHandle, state: &AppState) -> Result<(), String> {
                     Ok(c) => c,
                     Err(_) => return,
                 };
-                if apply_lines(
+                let changed = apply_lines(
                     &parser,
                     &mut chain,
                     &mut rampage,
                     character.as_deref(),
                     &lines,
-                ) {
-                    let _ = handle.emit(
-                        "raid-updated",
-                        RaidSnapshot {
-                            chain: chain.snapshot(),
-                            rampage: rampage.snapshot(),
-                        },
-                    );
+                );
+                let snapshot = changed.then(|| RaidSnapshot {
+                    chain: chain.snapshot(),
+                    rampage: rampage.snapshot(),
+                });
+                let chain_events = chain.take_events();
+                let rampage_events = rampage.take_events();
+                drop(parser);
+                drop(chain);
+                drop(rampage);
+                if let Some(snapshot) = snapshot {
+                    let _ = handle.emit("raid-updated", snapshot);
                 }
+                record_events(&handle, state.inner(), chain_events, rampage_events);
             }
         }
     }));
@@ -663,15 +919,23 @@ pub fn run() {
             inject_test_line,
             open_tester,
             open_overlay,
-            hide_overlay
+            hide_overlay,
+            get_session_reports,
+            clear_sessions,
+            demo_scenarios,
+            demo_preview,
+            start_demo,
+            stop_demo,
+            open_demo
         ])
         .setup(|app| {
             let show = MenuItem::with_id(app, "show", "Show Alfred", true, None::<&str>)?;
-            let chain = MenuItem::with_id(app, "chain", "Cleric Chain", true, None::<&str>)?;
-            let rampage = MenuItem::with_id(app, "rampage", "Rampage Chain", true, None::<&str>)?;
+            let chain = MenuItem::with_id(app, "chain", "Chain", true, None::<&str>)?;
             let commands = MenuItem::with_id(app, "commands", "Commands", true, None::<&str>)?;
+            let report = MenuItem::with_id(app, "report", "Session report", true, None::<&str>)?;
             let settings = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
             let tester = MenuItem::with_id(app, "tester", "Test log", true, None::<&str>)?;
+            let demo = MenuItem::with_id(app, "demo", "Demo scenario", true, None::<&str>)?;
             let overlay = MenuItem::with_id(app, "overlay", "Overlay", true, None::<&str>)?;
             let updates =
                 MenuItem::with_id(app, "updates", "Check for updates", true, None::<&str>)?;
@@ -679,8 +943,8 @@ pub fn run() {
             let menu = Menu::with_items(
                 app,
                 &[
-                    &show, &chain, &rampage, &commands, &settings, &tester, &overlay, &updates,
-                    &quit,
+                    &show, &chain, &commands, &report, &settings, &tester, &demo, &overlay,
+                    &updates, &quit,
                 ],
             )?;
 
@@ -701,13 +965,13 @@ pub fn run() {
                         show_main_window(app);
                         let _ = app.emit("open-view", "chain");
                     }
-                    "rampage" => {
-                        show_main_window(app);
-                        let _ = app.emit("open-view", "rampage");
-                    }
                     "commands" => {
                         show_main_window(app);
                         let _ = app.emit("open-view", "commands");
+                    }
+                    "report" => {
+                        show_main_window(app);
+                        let _ = app.emit("open-view", "report");
                     }
                     "settings" => {
                         show_main_window(app);
@@ -717,6 +981,12 @@ pub fn run() {
                         let handle = app.clone();
                         tauri::async_runtime::spawn(async move {
                             let _ = open_tester(handle).await;
+                        });
+                    }
+                    "demo" => {
+                        let handle = app.clone();
+                        tauri::async_runtime::spawn(async move {
+                            let _ = open_demo(handle).await;
                         });
                     }
                     "overlay" => toggle_overlay(app),
@@ -779,6 +1049,12 @@ pub fn run() {
         .run(|app, event| {
             if let tauri::RunEvent::ExitRequested { .. } = event {
                 persist_labeled_windows(app);
+                if let Some(state) = app.try_state::<AppState>() {
+                    if let Ok(mut recorder) = state.report.lock() {
+                        recorder.close_idle_at(u64::MAX);
+                        recorder.save_if_needed();
+                    }
+                }
             }
         });
 }

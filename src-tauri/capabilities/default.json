@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main, overlay, and test log windows",
-  "windows": ["main", "tester", "overlay"],
+  "description": "Capability for the main, overlay, test log, and demo windows",
+  "windows": ["main", "tester", "overlay", "demo"],
   "permissions": [
     "core:default",
     "core:window:allow-show",

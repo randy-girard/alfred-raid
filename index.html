@@ -19,13 +19,13 @@
         </div>
         <nav class="tabs" role="tablist">
           <button id="tab-chain" class="tab is-active" data-view="chain" type="button">
-            CH
-          </button>
-          <button id="tab-rampage" class="tab" data-view="rampage" type="button">
-            Rampage
+            Chain
           </button>
           <button id="tab-commands" class="tab" data-view="commands" type="button">
             Commands
+          </button>
+          <button id="tab-report" class="tab" data-view="report" type="button">
+            Report
           </button>
           <button id="tab-settings" class="tab" data-view="settings" type="button">
             Settings
@@ -47,6 +47,10 @@
 
       <section id="view-chain" class="view" data-view="chain">
         <div class="meta">
+          <div class="you-slot-field">
+            <span class="k">Your #</span>
+            <strong id="you-slot">—</strong>
+          </div>
           <div>
             <span class="k">Tank</span>
             <strong id="tank-name">—</strong>
@@ -67,6 +71,7 @@
 
         <div id="you-banner" class="banner next" hidden>
           <div class="you-cast-text">
+            <span id="you-slot-badge" class="you-slot-badge"></span>
             Cast in <span id="you-eta">0.0</span>s
             <span id="you-offset"></span>
           </div>
@@ -75,49 +80,14 @@
           </div>
         </div>
 
-        <div id="slots" class="slots"></div>
+        <div class="chain-body">
+          <div id="slots" class="slots"></div>
+          <aside id="side-chains" class="side-chains" hidden></aside>
+        </div>
         <div id="empty" class="empty">
-          Waiting for a cleric chain.<br />
-          Alfred will pick up CH macros like <code>GG 001 CH -- Tank</code>. Start with
-          <code>!startchain</code>.
-        </div>
-      </section>
-
-      <section id="view-rampage" class="view" data-view="rampage" hidden>
-        <div class="meta">
-          <div>
-            <span class="k">Tank</span>
-            <strong id="r-tank-name">—</strong>
-          </div>
-          <div>
-            <span class="k">Interval</span>
-            <strong id="r-interval">2.0s</strong>
-          </div>
-          <div>
-            <span class="k">Chain</span>
-            <strong id="r-chain-state">Stopped</strong>
-          </div>
-          <div>
-            <span class="k">Character</span>
-            <strong id="r-you-name">—</strong>
-          </div>
-        </div>
-
-        <div id="r-you-banner" class="banner next" hidden>
-          <div class="you-cast-text">
-            Cast in <span id="r-you-eta">0.0</span>s
-            <span id="r-you-offset"></span>
-          </div>
-          <div class="bar-row you-cast-bar">
-            <div class="bar"><span id="r-you-progress"></span></div>
-          </div>
-        </div>
-
-        <div id="r-slots" class="slots"></div>
-        <div id="r-empty" class="empty">
-          Waiting for a rampage chain.<br />
-          Use <code>RCH</code> with <code>AAA</code>, <code>BBB</code>, <code>CCC</code>. Start with
-          <code>!startchain</code>.
+          Waiting for a chain.<br />
+          Alfred will pick up CH macros like <code>GG 001 CH -- Tank</code> and rampage macros like
+          <code>GG AAA RCH -- Tank</code>. Start with <code>!startchain</code>.
         </div>
       </section>
 
@@ -136,6 +106,37 @@
         <div id="command-list" class="commands"></div>
         <h2 class="commands-heading">Rampage chain</h2>
         <div id="rampage-command-list" class="commands"></div>
+      </section>
+
+      <section id="view-report" class="view" data-view="report" hidden>
+        <p class="commands-lead">
+          Every chain Alfred watches becomes a session. Sessions end on
+          <code>!stopchain</code> or <code>!reset-chain</code>, or on their own after three quiet
+          minutes. Score starts at 100 and drops for drift off the beat, missed turns, and CHes
+          on the wrong target.
+        </p>
+
+        <label class="field">
+          <span>Session</span>
+          <select id="report-session"></select>
+        </label>
+
+        <div id="report-empty" class="empty">
+          No sessions yet.<br />
+          Alfred records one as soon as clerics start casting. Try the demo scenario in Settings.
+        </div>
+
+        <div id="report-body" hidden>
+          <div id="report-score"></div>
+          <div id="report-summary" class="meta"></div>
+          <h2 class="commands-heading">Clerics</h2>
+          <div id="report-clerics"></div>
+          <h2 class="commands-heading">Timeline</h2>
+          <ul id="report-timeline" class="timeline"></ul>
+        </div>
+
+        <button id="clear-sessions" type="button">Clear all sessions</button>
+        <p id="report-status" class="save-status"></p>
       </section>
 
       <section id="view-settings" class="view" data-view="settings" hidden>
@@ -211,10 +212,6 @@
             <span>Interval (s)</span>
             <input id="interval-seconds" type="number" min="0.1" step="0.1" />
           </label>
-          <label class="field">
-            <span>CH cast (s)</span>
-            <input id="cast-time" type="number" min="0.1" step="0.1" />
-          </label>
         </div>
 
         <fieldset class="radios">
@@ -234,6 +231,7 @@
 
         <button id="open-overlay" type="button">Open overlay</button>
         <button id="open-tester" type="button">Open test log</button>
+        <button id="open-demo" type="button">Run demo scenario</button>
         <button id="check-updates" type="button">Check for updates</button>
         <p id="update-status" class="save-status"></p>
 
