@@ -228,6 +228,10 @@ pub fn config_file_path() -> PathBuf {
     config_dir().join("config.ini")
 }
 
+pub fn sessions_file_path() -> PathBuf {
+    config_dir().join("sessions.json")
+}
+
 fn config_dir() -> PathBuf {
     let base = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
     match std::env::consts::OS {
