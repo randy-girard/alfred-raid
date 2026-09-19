@@ -317,6 +317,14 @@ mod tests {
             Some("Clericone"),
             &[ts("Leadcleric tells the raid, '!start'")],
         );
+        assert!(!chain.running);
+        assert!(chain.snapshot().armed);
+        apply_ch(
+            &parser,
+            &mut chain,
+            Some("Clericone"),
+            &[ts("You shout, 'GG 001 CH -- Mluian'")],
+        );
         assert!(chain.running);
         apply_ch(
             &parser,
@@ -339,9 +347,10 @@ mod tests {
             &ts("Leadcleric tells the raid, '!split 9'"),
             &ts("Leadcleric tells the raid, '!startchain'"),
         ]);
-        assert!(chain.running);
+        assert!(!chain.running);
+        assert!(chain.snapshot().armed);
         let snap = chain.snapshot();
-        assert!(snap.tanks.iter().any(|tank| tank.name == "Beefwich" && tank.running));
+        assert!(snap.tanks.iter().any(|tank| tank.name == "Beefwich" && tank.armed));
         assert_eq!(snap.your_tank.as_deref(), Some("Mluian"));
         assert!(snap.slots.iter().all(|slot| slot.number < 9));
         assert!(snap.slots.iter().all(|slot| slot.tank.as_deref() == Some("Mluian")));
@@ -365,6 +374,7 @@ mod tests {
             &ts("Leadcleric tells the guild, '!mt Mluian'"),
             &ts("You shout, 'GG 001 CH -- Mluian'"),
             &ts("Leadcleric tells the guild, '!startchain'"),
+            &ts("You shout, 'GG 001 CH -- Mluian'"),
             &ts("You shout, 'GG 001 CH -- Portlia'"),
         ]);
         assert_eq!(
@@ -382,7 +392,8 @@ mod tests {
             &ts("Two tells the group, '!take 002'"),
             &ts("Leadcleric auctions, '!startchain'"),
         ]);
-        assert!(chain.running);
+        assert!(!chain.running);
+        assert!(chain.snapshot().armed);
         let parser = Parser::new();
         apply_ch(
             &parser,
@@ -431,6 +442,17 @@ mod tests {
                 tag: Some("GG".into()),
                 raw: "GG 001 CH -- Mluian".into(),
             },
+            10_000,
+        );
+        chain.apply_heal_at(
+            crate::parser::CompleteHealCall {
+                speaker: "Clericone".into(),
+                is_you: true,
+                number: 1,
+                target: "Mluian".into(),
+                tag: Some("GG".into()),
+                raw: "GG 001 CH -- Mluian".into(),
+            },
             10_180,
         );
         assert!((chain.slots.get(&1).unwrap().last_offset_seconds.unwrap() - 0.18).abs() < 0.05);
@@ -447,7 +469,8 @@ mod tests {
         assert_eq!(rampage.slots.get(&1).unwrap().player, "Clericone");
         assert_eq!(rampage.slots.get(&2).unwrap().player, "Two");
         assert_eq!(rampage.slots.get(&3).unwrap().player, "Leadcleric");
-        assert!(rampage.running);
+        assert!(!rampage.running);
+        assert!(rampage.snapshot().armed);
         let named = run_rampage(&[&ts("Leadcleric tells the raid, '!rt Mluian'")]);
         assert_eq!(named.tank.as_deref(), Some("Mluian"));
         let ignored_split = run_rampage(&[&ts("Leadcleric tells the raid, '!rot Beefwich'")]);
@@ -478,8 +501,24 @@ mod tests {
                 ts("Leadcleric tells the raid, '!startchain'"),
             ],
         );
+        assert!(!chain.running);
+        assert!(chain.snapshot().armed);
+        assert!(!rampage.running);
+        assert!(rampage.snapshot().armed);
+        apply_lines(
+            &parser,
+            &mut chain,
+            &mut rampage,
+            Some("Clericone"),
+            &[
+                ts("You shout, 'GG 001 CH -- Mluian'"),
+                ts("Two shouts, 'GG BBB RCH -- Mluian'"),
+            ],
+        );
         assert!(chain.running);
+        assert_eq!(chain.snapshot().current_number, Some(1));
         assert!(rampage.running);
+        assert_eq!(rampage.snapshot().current_number, Some(2));
         apply_lines(
             &parser,
             &mut chain,
