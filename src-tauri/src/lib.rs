@@ -63,8 +63,11 @@ impl AppState {
             }
         }
         let parser = Parser::with_chain_tag(&config.chain_tag);
-        let chain = ChainState::new(config.interval_seconds, config.cast_time_seconds);
-        let rampage = ChainState::new_rampage(config.interval_seconds, config.cast_time_seconds);
+        let ttl = config.alert_dismiss_ms();
+        let mut chain = ChainState::new(config.interval_seconds, config.cast_time_seconds);
+        let mut rampage = ChainState::new_rampage(config.interval_seconds, config.cast_time_seconds);
+        chain.warning_ttl_ms = ttl;
+        rampage.warning_ttl_ms = ttl;
         Self {
             config: Mutex::new(config),
             chain: Mutex::new(chain),
@@ -179,6 +182,15 @@ fn save_settings(state: State<AppState>, app: AppHandle, patch: SettingsPatch) -
     if let Some(v) = patch.alert_auto_take_sound {
         config.alert_auto_take_sound = v;
     }
+    if let Some(v) = patch.alert_start_chain_sound {
+        config.alert_start_chain_sound = v;
+    }
+    if let Some(v) = patch.alert_dismiss_seconds {
+        config.alert_dismiss_seconds = v.max(0.0);
+        let ttl = config.alert_dismiss_ms();
+        state.chain.lock().map_err(|e| e.to_string())?.warning_ttl_ms = ttl;
+        state.rampage.lock().map_err(|e| e.to_string())?.warning_ttl_ms = ttl;
+    }
 
     config.save().map_err(|e| e.to_string())?;
     let cloned = config.clone();
@@ -269,6 +281,8 @@ struct SettingsPatch {
     alert_slot_taken: Option<bool>,
     alert_wrong_target: Option<bool>,
     alert_auto_take_sound: Option<bool>,
+    alert_start_chain_sound: Option<bool>,
+    alert_dismiss_seconds: Option<f64>,
 }
 
 fn start_watcher(app: &AppHandle, state: &AppState) -> Result<(), String> {

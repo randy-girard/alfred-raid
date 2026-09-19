@@ -24,6 +24,7 @@ import {
   isAlertEnabled,
   shouldSpeakWrongTarget,
   shouldSpeakAutoTake,
+  shouldSpeakStartChain,
   shouldShowYouBanner,
   chainStateLabel,
   youCastProgress,
@@ -77,6 +78,7 @@ function snap(overrides: Partial<ChainSnapshot> = {}): ChainSnapshot {
     warningUrgent: false,
     warningKind: "other",
     warningSpeech: null,
+    warningAtMs: null,
     tanks: [],
     slotFormat: "number",
     slots: [
@@ -362,7 +364,7 @@ describe("helpers", () => {
     ).toBe(false);
     expect(
       isAlertEnabled({
-        kind: "other",
+        kind: "startChain",
         alertSlotTaken: false,
         alertWrongTarget: false,
       }),
@@ -399,6 +401,52 @@ describe("helpers", () => {
     expect(shouldSpeakAutoTake({ ...base, kind: "wrongTarget" })).toBe(false);
   });
 
+  it("speaks start-chain once and again after a later start", () => {
+    const base = {
+      enabled: true,
+      kind: "startChain" as const,
+      urgent: true,
+      speech: "Chain is starting",
+      warningAtMs: 10_000,
+      lastSpoken: null as string | null,
+      lastSpokenAt: null as number | null,
+      lastWarningAtMs: null as number | null,
+      now: 10_000,
+    };
+    expect(shouldSpeakStartChain(base)).toBe(true);
+    expect(
+      shouldSpeakStartChain({
+        ...base,
+        lastSpoken: base.speech,
+        lastSpokenAt: 10_000,
+        lastWarningAtMs: 10_000,
+        now: 10_500,
+      }),
+    ).toBe(false);
+    expect(
+      shouldSpeakStartChain({
+        ...base,
+        lastSpoken: base.speech,
+        lastSpokenAt: 10_000,
+        lastWarningAtMs: 10_000,
+        now: 18_000,
+      }),
+    ).toBe(false);
+    expect(
+      shouldSpeakStartChain({
+        ...base,
+        warningAtMs: 20_000,
+        lastSpoken: base.speech,
+        lastSpokenAt: 10_000,
+        lastWarningAtMs: 10_000,
+        now: 20_000,
+      }),
+    ).toBe(true);
+    expect(shouldSpeakStartChain({ ...base, enabled: false })).toBe(false);
+    expect(shouldSpeakStartChain({ ...base, urgent: false })).toBe(false);
+    expect(shouldSpeakStartChain({ ...base, kind: "autoTake" })).toBe(false);
+  });
+
   it("hides a warning after it is dismissed until a new one arrives", () => {
     expect(shouldShowWarning({ warning: null, dismissed: null })).toBe(false);
     expect(
@@ -414,6 +462,33 @@ describe("helpers", () => {
       shouldShowWarning({
         warning: "Could not skip 004.",
         dismissed: "002 is already taken.",
+      }),
+    ).toBe(true);
+    expect(
+      shouldShowWarning({
+        warning: "Chain is starting.",
+        dismissed: null,
+        warningAtMs: 1_000,
+        now: 10_999,
+        dismissSeconds: 10,
+      }),
+    ).toBe(true);
+    expect(
+      shouldShowWarning({
+        warning: "Chain is starting.",
+        dismissed: null,
+        warningAtMs: 1_000,
+        now: 11_000,
+        dismissSeconds: 10,
+      }),
+    ).toBe(false);
+    expect(
+      shouldShowWarning({
+        warning: "Chain is starting.",
+        dismissed: null,
+        warningAtMs: 1_000,
+        now: 60_000,
+        dismissSeconds: 0,
       }),
     ).toBe(true);
   });

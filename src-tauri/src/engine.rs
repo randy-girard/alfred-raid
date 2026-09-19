@@ -503,8 +503,16 @@ mod tests {
         );
         assert!(!chain.running);
         assert!(chain.snapshot().armed);
+        assert_eq!(
+            chain.snapshot().warning.as_deref(),
+            Some("Chain is starting.")
+        );
         assert!(!rampage.running);
         assert!(rampage.snapshot().armed);
+        assert_eq!(
+            rampage.snapshot().warning.as_deref(),
+            Some("Chain is starting.")
+        );
         apply_lines(
             &parser,
             &mut chain,

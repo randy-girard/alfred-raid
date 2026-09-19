@@ -106,7 +106,7 @@ Sound, metronome, and claim alerts follow whichever tab is visible so the two cl
 | `!move 001 002` | Swap two CH numbers, or `!move AAA BBB` for rampage |
 | `!chain 2 [tank]` | Set the interval to 2 seconds, or that tank only |
 
-`!startchain` arms the chain. The clock does not run until the first CH or RCH after that, and it starts from whoever went. Mid-fight `!startchain` waits for the next shout the same way.
+`!startchain` arms the chain. The clock does not run until the first CH or RCH after that, and it starts from whoever went. Mid-fight `!startchain` waits for the next shout the same way. Every Alfred shows **Chain is starting** and speaks it unless you turn that voice off in Settings.
 
 Without `!startchain`, the list still follows the last CH or RCH so HP-based chains keep order without a timer. Short shout gaps around the chain interval still start a local clock if you joined late.
 
@@ -137,6 +137,8 @@ If someone claims a number that is already taken, Alfred leaves the occupant in 
 
 If a tank is set, the chain is running, and someone already on the chain CHs a different target, Alfred names who they CHed versus the tank and speaks **Wrong target** to that user. Both alerts appear on every tab. Turn each one on or off in Settings.
 
+Warnings and alerts hide after 10 seconds, or sooner if you dismiss them. Change that delay in Settings, or set it to 0 to keep them until you close them.
+
 In Settings, pick a next-up voice, metronome, or **None**. Next-up says **GO SOON** when there is still time, or **GO NOW** at 0. Sound and metronome cannot both be on. Skipped numbers are not spoken.
 
 ## Config
@@ -161,6 +163,8 @@ setup_complete = true
 alert_slot_taken = true
 alert_wrong_target = true
 alert_auto_take_sound = true
+alert_start_chain_sound = true
+alert_dismiss_seconds = 10
 
 [chain]
 interval_seconds = 2

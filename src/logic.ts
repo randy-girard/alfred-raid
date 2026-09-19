@@ -30,7 +30,7 @@ export type TankSnapshot = {
   isYou: boolean;
 };
 
-export type WarningKind = "other" | "slotTaken" | "wrongTarget" | "autoTake";
+export type WarningKind = "other" | "slotTaken" | "wrongTarget" | "autoTake" | "startChain";
 
 export type ChainSnapshot = {
   tank: string | null;
@@ -51,6 +51,7 @@ export type ChainSnapshot = {
   warningUrgent: boolean;
   warningKind: WarningKind;
   warningSpeech: string | null;
+  warningAtMs: number | null;
   tanks: TankSnapshot[];
   slots: SlotSnapshot[];
   slotFormat: "number" | "letter";
@@ -134,7 +135,7 @@ export const CHAIN_COMMANDS: CommandHelp[] = [
     usage: "!startchain",
     aliases: ["!start-chain", "!start", "!start chain"],
     optional: "tank",
-    effect: "Arm CH and rampage. The clock starts on the first CH or RCH, from that cleric. Name a tank to arm only that tank.",
+    effect: "Arm CH and rampage and announce that the chain is starting. The clock starts on the first CH or RCH, from that cleric. Name a tank to arm only that tank.",
   },
   {
     usage: "!stopchain",
@@ -357,12 +358,53 @@ export function shouldSpeakWrongTarget(opts: {
   return opts.lastSpoken !== opts.warning;
 }
 
+export function shouldSpeakStartChain(opts: {
+  enabled: boolean;
+  kind: WarningKind | null | undefined;
+  urgent: boolean;
+  speech: string | null | undefined;
+  warningAtMs: number | null | undefined;
+  lastSpoken: string | null;
+  lastSpokenAt: number | null;
+  lastWarningAtMs: number | null;
+  now: number;
+}): boolean {
+  if (!opts.enabled || opts.kind !== "startChain" || !opts.urgent || !opts.speech) {
+    return false;
+  }
+  if (opts.warningAtMs != null && opts.lastWarningAtMs === opts.warningAtMs) {
+    return false;
+  }
+  if (
+    opts.lastSpoken === opts.speech &&
+    opts.lastSpokenAt != null &&
+    opts.now - opts.lastSpokenAt < 2000
+  ) {
+    return false;
+  }
+  return true;
+}
+
 export function shouldShowWarning(opts: {
   warning: string | null | undefined;
   dismissed: string | null;
+  warningAtMs?: number | null;
+  now?: number;
+  dismissSeconds?: number;
 }): boolean {
   if (!opts.warning) return false;
-  return opts.dismissed !== opts.warning;
+  if (opts.dismissed === opts.warning) return false;
+  const ttl = opts.dismissSeconds;
+  if (
+    ttl != null &&
+    ttl > 0 &&
+    opts.warningAtMs != null &&
+    opts.now != null &&
+    opts.now - opts.warningAtMs >= ttl * 1000
+  ) {
+    return false;
+  }
+  return true;
 }
 
 export function shouldChime(opts: {
@@ -630,7 +672,7 @@ export function liveSnapshot(
 
 function idleSnapshot(snapshot: ChainSnapshot, now: number): ChainSnapshot {
   const cast = snapshot.castTimeSeconds;
-  const slots = snapshot.slots.map((slot) => {
+  let slots = snapshot.slots.map((slot) => {
     const start = slot.lastCastMs ?? slot.lastShoutMs;
     if (!start) {
       return { ...slot, remainingSeconds: 0, progress: 0 };

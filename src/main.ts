@@ -20,6 +20,7 @@ import {
   isAlertEnabled,
   shouldSpeakWrongTarget,
   shouldSpeakAutoTake,
+  shouldSpeakStartChain,
   shouldSpeakMetronome,
   firstRunSteps,
   setupStepLabel,
@@ -71,6 +72,8 @@ type AppConfig = {
   alertSlotTaken: boolean;
   alertWrongTarget: boolean;
   alertAutoTakeSound: boolean;
+  alertStartChainSound: boolean;
+  alertDismissSeconds: number;
 };
 
 let raid: RaidSnapshot | null = null;
@@ -93,6 +96,15 @@ let lastSpokenWrongTarget: { chain: string | null; rampage: string | null } = {
 let lastSpokenAutoTake: { chain: string | null; rampage: string | null } = {
   chain: null,
   rampage: null,
+};
+let lastSpokenStartChain: {
+  speech: string | null;
+  at: number | null;
+  warningAtMs: number | null;
+} = {
+  speech: null,
+  at: null,
+  warningAtMs: null,
 };
 let lastClaimWarning: { chain: string | null; rampage: string | null } = {
   chain: null,
@@ -321,6 +333,7 @@ function renderAlerts() {
     urgent: boolean;
     warningKind: ChainSnapshot["warningKind"];
     warningSpeech: string | null;
+    warningAtMs: number | null;
   }> = [];
   for (const kind of ["chain", "rampage"] as const) {
     const live = kind === "chain"
@@ -343,7 +356,13 @@ function renderAlerts() {
     ) {
       continue;
     }
-    if (!shouldShowWarning({ warning, dismissed: dismissedWarning[kind] })) {
+    if (!shouldShowWarning({
+      warning,
+      dismissed: dismissedWarning[kind],
+      warningAtMs: live?.warningAtMs,
+      now: Date.now(),
+      dismissSeconds: config?.alertDismissSeconds ?? 10,
+    })) {
       continue;
     }
     items.push({
@@ -352,11 +371,19 @@ function renderAlerts() {
       urgent: live?.warningUrgent ?? false,
       warningKind: live?.warningKind ?? "other",
       warningSpeech: live?.warningSpeech ?? null,
+      warningAtMs: live?.warningAtMs ?? null,
     });
   }
 
-  host.hidden = items.length === 0;
-  host.innerHTML = items
+  const seen = new Set<string>();
+  const unique = items.filter((item) => {
+    if (seen.has(item.warning)) return false;
+    seen.add(item.warning);
+    return true;
+  });
+
+  host.hidden = unique.length === 0;
+  host.innerHTML = unique
     .map((item) => {
       const cls = item.urgent ? "banner danger dismissable" : "banner warn dismissable";
       return `<div class="${cls}" data-warning="${item.kind}" role="alert">
@@ -366,12 +393,18 @@ function renderAlerts() {
     })
     .join("");
 
-  for (const item of items) {
+  for (const item of unique) {
     if (item.warningKind === "slotTaken") {
       maybeClaimAlert(item.warning, item.urgent, item.kind);
     }
     maybeWrongTargetSpeech(item.warning, item.warningKind, item.urgent, item.kind);
     maybeAutoTakeSpeech(item.warningSpeech, item.warningKind, item.urgent, item.kind);
+    maybeStartChainSpeech(
+      item.warningSpeech,
+      item.warningKind,
+      item.urgent,
+      item.warningAtMs,
+    );
   }
 }
 
@@ -409,6 +442,9 @@ function fillSettings(cfg: AppConfig) {
   ($("alert-slot-taken") as HTMLInputElement).checked = cfg.alertSlotTaken;
   ($("alert-wrong-target") as HTMLInputElement).checked = cfg.alertWrongTarget;
   ($("alert-auto-take-sound") as HTMLInputElement).checked = cfg.alertAutoTakeSound;
+  ($("alert-start-chain-sound") as HTMLInputElement).checked = cfg.alertStartChainSound;
+  const dismiss = $("alert-dismiss-seconds") as HTMLInputElement;
+  if (active !== dismiss) dismiss.value = String(cfg.alertDismissSeconds);
 }
 
 function optionalNumber(id: string, min: number): number | undefined {
@@ -431,6 +467,8 @@ function readSettingsPatch(): Record<string, unknown> {
     alertSlotTaken: ($("alert-slot-taken") as HTMLInputElement).checked,
     alertWrongTarget: ($("alert-wrong-target") as HTMLInputElement).checked,
     alertAutoTakeSound: ($("alert-auto-take-sound") as HTMLInputElement).checked,
+    alertStartChainSound: ($("alert-start-chain-sound") as HTMLInputElement).checked,
+    alertDismissSeconds: optionalNumber("alert-dismiss-seconds", 0),
   };
 }
 
@@ -670,6 +708,40 @@ function maybeAutoTakeSpeech(
   speechSynthesis.speak(utterance);
 }
 
+function maybeStartChainSpeech(
+  speech: string | null,
+  kind: ChainSnapshot["warningKind"],
+  urgent: boolean,
+  warningAtMs: number | null,
+) {
+  const now = Date.now();
+  if (
+    !shouldSpeakStartChain({
+      enabled: config?.alertStartChainSound ?? true,
+      kind,
+      urgent,
+      speech,
+      warningAtMs,
+      lastSpoken: lastSpokenStartChain.speech,
+      lastSpokenAt: lastSpokenStartChain.at,
+      lastWarningAtMs: lastSpokenStartChain.warningAtMs,
+      now,
+    })
+  ) {
+    return;
+  }
+  lastSpokenStartChain = {
+    speech: speech ?? null,
+    at: now,
+    warningAtMs,
+  };
+  if (!speech || typeof speechSynthesis === "undefined") return;
+  speechSynthesis.cancel();
+  const utterance = new SpeechSynthesisUtterance(speech);
+  utterance.rate = 1.1;
+  speechSynthesis.speak(utterance);
+}
+
 function playClaimAlert() {
   if (!audioCtx) return;
   const ctx = audioCtx;
@@ -801,7 +873,7 @@ window.addEventListener("DOMContentLoaded", () => {
   $("always-on-top").addEventListener("change", () => {
     void saveSettingsFromForm();
   });
-  for (const id of ["alert-slot-taken", "alert-wrong-target", "alert-auto-take-sound"]) {
+  for (const id of ["alert-slot-taken", "alert-wrong-target", "alert-auto-take-sound", "alert-start-chain-sound"]) {
     $(id).addEventListener("change", () => {
       void saveSettingsFromForm();
     });
@@ -816,7 +888,7 @@ window.addEventListener("DOMContentLoaded", () => {
       void saveSettingsFromForm();
     });
   });
-  for (const id of ["sound-lead", "interval-seconds", "cast-time", "chain-tag"]) {
+  for (const id of ["sound-lead", "interval-seconds", "cast-time", "chain-tag", "alert-dismiss-seconds"]) {
     const input = $(id);
     input.addEventListener("input", () => scheduleSaveSettings());
     input.addEventListener("change", () => {
@@ -837,7 +909,11 @@ window.addEventListener("DOMContentLoaded", () => {
     const kind = el.dataset.warning;
     if (kind !== "chain" && kind !== "rampage") return;
     const live = kind === "chain" ? raid?.chain : raid?.rampage;
-    if (live?.warning) dismissedWarning[kind] = live.warning;
+    const text = live?.warning;
+    if (text) {
+      if (raid?.chain?.warning === text) dismissedWarning.chain = text;
+      if (raid?.rampage?.warning === text) dismissedWarning.rampage = text;
+    }
     renderChain();
   });
 

@@ -19,6 +19,8 @@ pub struct AppConfig {
     pub alert_slot_taken: bool,
     pub alert_wrong_target: bool,
     pub alert_auto_take_sound: bool,
+    pub alert_start_chain_sound: bool,
+    pub alert_dismiss_seconds: f64,
     pub window_x: Option<f64>,
     pub window_y: Option<f64>,
     pub window_width: Option<f64>,
@@ -41,6 +43,8 @@ impl Default for AppConfig {
             alert_slot_taken: true,
             alert_wrong_target: true,
             alert_auto_take_sound: true,
+            alert_start_chain_sound: true,
+            alert_dismiss_seconds: 10.0,
             window_x: None,
             window_y: None,
             window_width: None,
@@ -79,6 +83,14 @@ impl AppConfig {
         self.window_y = Some(geom.y);
         self.window_width = Some(geom.width);
         self.window_height = Some(geom.height);
+    }
+
+    pub fn alert_dismiss_ms(&self) -> u64 {
+        if !self.alert_dismiss_seconds.is_finite() || self.alert_dismiss_seconds <= 0.0 {
+            0
+        } else {
+            (self.alert_dismiss_seconds * 1000.0).round() as u64
+        }
     }
 }
 
@@ -205,6 +217,16 @@ fn parse_ini(text: &str) -> AppConfig {
             ("general", "alert_slot_taken") => cfg.alert_slot_taken = parse_bool(&value),
             ("general", "alert_wrong_target") => cfg.alert_wrong_target = parse_bool(&value),
             ("general", "alert_auto_take_sound") => cfg.alert_auto_take_sound = parse_bool(&value),
+            ("general", "alert_start_chain_sound") => {
+                cfg.alert_start_chain_sound = parse_bool(&value)
+            }
+            ("general", "alert_dismiss_seconds") => {
+                if let Ok(v) = value.parse::<f64>() {
+                    if v.is_finite() && v >= 0.0 {
+                        cfg.alert_dismiss_seconds = v;
+                    }
+                }
+            }
             ("chain", "interval_seconds") => {
                 if let Ok(v) = value.parse() {
                     cfg.interval_seconds = v;
@@ -250,6 +272,8 @@ setup_complete = {setup_complete}
 alert_slot_taken = {alert_slot_taken}
 alert_wrong_target = {alert_wrong_target}
 alert_auto_take_sound = {alert_auto_take_sound}
+alert_start_chain_sound = {alert_start_chain_sound}
+alert_dismiss_seconds = {alert_dismiss_seconds}
 
 [chain]
 interval_seconds = {interval_seconds}
@@ -266,6 +290,8 @@ tag = {chain_tag}
         alert_slot_taken = cfg.alert_slot_taken,
         alert_wrong_target = cfg.alert_wrong_target,
         alert_auto_take_sound = cfg.alert_auto_take_sound,
+        alert_start_chain_sound = cfg.alert_start_chain_sound,
+        alert_dismiss_seconds = cfg.alert_dismiss_seconds,
         interval_seconds = cfg.interval_seconds,
         cast_time_seconds = cfg.cast_time_seconds,
         chain_tag = cfg.chain_tag,
@@ -364,6 +390,8 @@ mod tests {
         assert!(parsed.alert_slot_taken);
         assert!(parsed.alert_wrong_target);
         assert!(parsed.alert_auto_take_sound);
+        assert!(parsed.alert_start_chain_sound);
+        assert_eq!(parsed.alert_dismiss_seconds, 10.0);
         assert_eq!(parsed.window_geometry(), cfg.window_geometry());
     }
 
@@ -389,20 +417,30 @@ setup_complete = false
         assert!(AppConfig::default().alert_slot_taken);
         assert!(AppConfig::default().alert_wrong_target);
         assert!(AppConfig::default().alert_auto_take_sound);
+        assert!(AppConfig::default().alert_start_chain_sound);
+        assert_eq!(AppConfig::default().alert_dismiss_seconds, 10.0);
+        assert_eq!(AppConfig::default().alert_dismiss_ms(), 10_000);
         assert!(parsed.alert_slot_taken);
         assert!(parsed.alert_wrong_target);
         assert!(parsed.alert_auto_take_sound);
+        assert!(parsed.alert_start_chain_sound);
+        assert_eq!(parsed.alert_dismiss_seconds, 10.0);
         let alerts_off = parse_ini(
             r#"
 [general]
 alert_slot_taken = false
 alert_wrong_target = false
 alert_auto_take_sound = false
+alert_start_chain_sound = false
+alert_dismiss_seconds = 0
 "#,
         );
         assert!(!alerts_off.alert_slot_taken);
         assert!(!alerts_off.alert_wrong_target);
         assert!(!alerts_off.alert_auto_take_sound);
+        assert!(!alerts_off.alert_start_chain_sound);
+        assert_eq!(alerts_off.alert_dismiss_seconds, 0.0);
+        assert_eq!(alerts_off.alert_dismiss_ms(), 0);
     }
 
     #[test]
@@ -540,6 +578,8 @@ ch_2 = (?i)HEAL (\d+) on (\S+)
         assert!(text.contains("alert_slot_taken"));
         assert!(text.contains("alert_wrong_target"));
         assert!(text.contains("alert_auto_take_sound"));
+        assert!(text.contains("alert_start_chain_sound"));
+        assert!(text.contains("alert_dismiss_seconds"));
         assert!(!text.contains("[window]"));
         assert!(!text.contains("[patterns]"));
         assert!(!text.contains("ch_1"));

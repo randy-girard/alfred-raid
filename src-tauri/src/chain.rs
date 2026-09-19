@@ -49,6 +49,7 @@ pub enum WarningKind {
     SlotTaken,
     WrongTarget,
     AutoTake,
+    StartChain,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,6 +90,7 @@ pub struct ChainState {
     pub warning_urgent: bool,
     pub warning_kind: WarningKind,
     pub warning_speech: Option<String>,
+    pub warning_ttl_ms: u64,
     slot_format: SlotFormat,
     shout_sync: bool,
     armed: bool,
@@ -151,6 +153,7 @@ pub struct ChainSnapshot {
     pub warning_urgent: bool,
     pub warning_kind: WarningKind,
     pub warning_speech: Option<String>,
+    pub warning_at_ms: Option<u64>,
     pub tanks: Vec<TankSnapshot>,
     pub slots: Vec<SlotSnapshot>,
     pub slot_format: SlotFormat,
@@ -186,6 +189,7 @@ impl ChainState {
             warning_urgent: false,
             warning_kind: WarningKind::Other,
             warning_speech: None,
+            warning_ttl_ms: 10_000,
             slot_format: SlotFormat::Number,
             shout_sync: false,
             armed: false,
@@ -571,6 +575,11 @@ impl ChainState {
         }
     }
 
+    fn announce_start_chain(&mut self, now: u64) {
+        self.set_warning_at("Chain is starting.".into(), now, true, WarningKind::StartChain);
+        self.warning_speech = Some("Chain is starting".into());
+    }
+
     fn same_player(&self, a: &str, b: &str) -> bool {
         a.eq_ignore_ascii_case(b) || (self.is_you(a) && self.is_you(b))
     }
@@ -605,11 +614,17 @@ impl ChainState {
         vacated
     }
 
+    fn warning_expired(&self, now: u64) -> bool {
+        if self.warning_ttl_ms == 0 {
+            return false;
+        }
+        self.warning_at_ms
+            .is_some_and(|at| now.saturating_sub(at) >= self.warning_ttl_ms)
+    }
+
     fn clear_stale_warning_at(&mut self, now: u64) {
-        if let Some(at) = self.warning_at_ms {
-            if now.saturating_sub(at) > 20_000 {
-                self.clear_warning();
-            }
+        if self.warning_expired(now) {
+            self.clear_warning();
         }
     }
 
@@ -736,13 +751,7 @@ impl ChainState {
             })
             .collect();
 
-        let warning = self.warning.clone().and_then(|w| {
-            if now.saturating_sub(self.warning_at_ms.unwrap_or(now)) > 20_000 {
-                None
-            } else {
-                Some(w)
-            }
-        });
+        let warning = self.warning.clone().filter(|_| !self.warning_expired(now));
         let warning_urgent = warning.is_some() && self.warning_urgent;
         let warning_kind = if warning.is_some() {
             self.warning_kind
@@ -751,6 +760,11 @@ impl ChainState {
         };
         let warning_speech = if warning.is_some() {
             self.warning_speech.clone()
+        } else {
+            None
+        };
+        let warning_at_ms = if warning.is_some() {
+            self.warning_at_ms
         } else {
             None
         };
@@ -776,6 +790,7 @@ impl ChainState {
             warning_urgent,
             warning_kind,
             warning_speech,
+            warning_at_ms,
             tanks,
             slots,
             slot_format: self.slot_format,
@@ -1251,7 +1266,7 @@ impl ChainState {
         }
     }
 
-    fn start_chains(&mut self, tank: Option<String>, _now: u64) -> Option<String> {
+    fn start_chains(&mut self, tank: Option<String>, now: u64) -> Option<String> {
         let keys = match self.resolve_tank_keys(tank.as_deref()) {
             Ok(keys) => keys,
             Err(warning) => return Some(warning),
@@ -1270,6 +1285,7 @@ impl ChainState {
         if started == 0 {
             Some("Cannot start an empty chain. Take or shout numbers first.".into())
         } else {
+            self.announce_start_chain(now);
             None
         }
     }
@@ -2048,10 +2064,31 @@ mod tests {
         let mut chain = ChainState::new(2.0, 10.0);
         chain.warning = Some("old".into());
         chain.warning_at_ms = Some(1_000);
-        let snap = chain.snapshot_at(22_000);
+        let snap = chain.snapshot_at(11_000);
         assert_eq!(snap.warning, None);
-        let fresh = chain.snapshot_at(5_000);
+        assert_eq!(snap.warning_at_ms, None);
+        let fresh = chain.snapshot_at(10_999);
         assert_eq!(fresh.warning.as_deref(), Some("old"));
+        assert_eq!(fresh.warning_at_ms, Some(1_000));
+        chain.warning_ttl_ms = 0;
+        let kept = chain.snapshot_at(60_000);
+        assert_eq!(kept.warning.as_deref(), Some("old"));
+    }
+
+    #[test]
+    fn startchain_announces_that_the_chain_is_starting() {
+        let mut chain = filled();
+        assert!(chain
+            .apply_command_at(ChainCommand::StartChain { tank: None }, "Lead".into(), 10_000)
+            .is_none());
+        let snap = chain.snapshot_at(10_000);
+        assert_eq!(snap.warning.as_deref(), Some("Chain is starting."));
+        assert_eq!(snap.warning_speech.as_deref(), Some("Chain is starting"));
+        assert_eq!(snap.warning_kind, WarningKind::StartChain);
+        assert!(snap.warning_urgent);
+        assert_eq!(snap.warning_at_ms, Some(10_000));
+        let later = chain.snapshot_at(20_000);
+        assert_eq!(later.warning, None);
     }
 
     #[test]

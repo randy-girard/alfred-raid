@@ -120,7 +120,7 @@
           CH; <code>!take AAA</code> and <code>!skip AAA</code> go to rampage. Add a name to place
           someone else: <code>!take 001 Portlia</code> or <code>!take Portlia</code>. Bare
           <code>!skip</code> / <code>!back</code> apply to every chain you are on.
-          <code>!startchain</code> and <code>!stopchain</code> arm and stop CH and rampage together. The clock starts on the first CH or RCH.
+          <code>!startchain</code> and <code>!stopchain</code> arm and stop CH and rampage together. The clock starts on the first CH or RCH. <code>!startchain</code> also shows a <strong>Chain is starting</strong> alert.
         </p>
         <h2 class="commands-heading">CH chain</h2>
         <div id="command-list" class="commands"></div>
@@ -162,6 +162,15 @@
           <label class="check">
             <input id="alert-auto-take-sound" type="checkbox" />
             <span>Speak the number when !take assigns the next slot</span>
+          </label>
+          <label class="check">
+            <input id="alert-start-chain-sound" type="checkbox" />
+            <span>Speak when the chain is starting</span>
+          </label>
+          <label class="field">
+            <span>Hide alerts after (s)</span>
+            <input id="alert-dismiss-seconds" type="number" min="0" step="1" />
+            <small>Banners close on their own after this many seconds. 0 keeps them until you dismiss them.</small>
           </label>
         </fieldset>
 
