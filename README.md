@@ -206,13 +206,13 @@ cargo install cargo-llvm-cov --locked
 On macOS with Homebrew, `brew install cargo-llvm-cov llvm` also works.
 
 <!-- coverage:start -->
-**Line coverage:** 72.5% (5269 / 7268).
+**Line coverage:** 70.0% (5638 / 8058).
 
 | Package | Coverage | Hit / lines |
 | --- | ---: | ---: |
-| src | 31.4% | 443 / 1411 |
+| src | 29.6% | 506 / 1709 |
 | scripts | 70.3% | 426 / 606 |
-| src-tauri | 83.8% | 4400 / 5251 |
+| src-tauri | 81.9% | 4706 / 5743 |
 
 The HTML report is gitignored. Run `make test` and open `coverage/index.html`.
 <!-- coverage:end -->
