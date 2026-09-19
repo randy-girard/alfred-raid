@@ -8,9 +8,10 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "test": "vitest run && cargo test --manifest-path src-tauri/Cargo.toml",
+    "test": "node scripts/run-coverage.mjs",
     "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
-    "test:js": "vitest run"
+    "test:js": "vitest run",
+    "coverage": "node scripts/run-coverage.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
@@ -19,6 +20,7 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
+    "@vitest/coverage-v8": "^3.2.4",
     "typescript": "~6.0.3",
     "vite": "^8.0.16",
     "vitest": "^3.2.4"

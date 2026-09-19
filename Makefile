@@ -3,7 +3,7 @@
 NPM ?= npm
 CARGO ?= cargo
 
-.PHONY: help setup dev run build test test-js test-rust check fmt clean config
+.PHONY: help setup dev run build test test-js test-rust coverage check fmt clean config
 
 help: ## Show available targets
 	@awk 'BEGIN {FS = ":.*## "; printf "\n  Alfred — GoodGuys raid assistant\n\n"} \
@@ -24,10 +24,12 @@ run: dev ## Same as make dev
 build: node_modules ## Build a release app for this OS
 	$(NPM) run tauri build
 
-test: node_modules ## Run JavaScript and Rust tests
+test: node_modules ## Run JS and Rust tests and write coverage/index.html
 	$(NPM) test
 
-test-js: node_modules ## Run UI helper tests
+coverage: test ## Same as make test
+
+test-js: node_modules ## Run UI helper tests without coverage
 	$(NPM) run test:js
 
 test-rust: ## Run Rust tests
@@ -41,7 +43,7 @@ fmt: ## Format Rust sources
 	$(CARGO) fmt --manifest-path src-tauri/Cargo.toml
 
 clean: ## Remove build artifacts
-	rm -rf dist src-tauri/target
+	rm -rf dist src-tauri/target coverage
 
 config: ## Open the Alfred config directory (creates it if needed)
 	@node -e "\
