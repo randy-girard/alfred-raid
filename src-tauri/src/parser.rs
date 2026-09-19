@@ -1,16 +1,17 @@
 use regex::Regex;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
+// Optional guild tag, then slot, CH/RCH, target. The configured tag (default GG) is required.
 const CH_PATTERNS: &[&str] = &[
-    r"(?i)^\s*(?:GG|CC)\s+(\d{1,3})\s+CH\s*(?:--+|—|-|:)?\s*(.+?)\s*$",
-    r"(?i)^\s*(?:GG|CC)\s+CH\s+(\d{1,3})\s*(?:--+|—|-|:)?\s*(.+?)\s*$",
-    r"(?i)^\s*(?:CC|GG)?\s*(\d{1,3})\s+CH\s*(?:--+|—|-|:)?\s*(.+?)\s*$",
+    r"(?i)^\s*(?:[A-Za-z]{2,4}\s+)?(\d{1,3})\s+CH\b\s*(?:--+|—|-|:)?\s*(.*?)\s*$",
+    r"(?i)^\s*(?:[A-Za-z]{2,4}\s+)?CH\s+(\d{1,3})\s*(?:--+|—|-|:)?\s*(.*?)\s*$",
 ];
 
 const RCH_PATTERNS: &[&str] = &[
-    r"(?i)^\s*(?:GG|CC)\s+([A-Za-z]{1,3})\s+RCH\s*(?:--+|—|-|:)?\s*(.+?)\s*$",
-    r"(?i)^\s*(?:GG|CC)\s+RCH\s+([A-Za-z]{1,3})\s*(?:--+|—|-|:)?\s*(.+?)\s*$",
-    r"(?i)^\s*(?:CC|GG)?\s*([A-Za-z]{1,3})\s+RCH\s*(?:--+|—|-|:)?\s*(.+?)\s*$",
+    r"(?i)^\s*(?:[A-Za-z]{2,4}\s+)?([A-Za-z]{1,3})\s+RCH\b\s*(?:--+|—|-|:)?\s*(.*?)\s*$",
+    r"(?i)^\s*(?:[A-Za-z]{2,4}\s+)?RCH\s+([A-Za-z]{1,3})\s*(?:--+|—|-|:)?\s*(.*?)\s*$",
+    r"(?i)^\s*(?:[A-Za-z]{2,4}\s+)?([A-Za-z]{1,3})\s+CH\b\s*(?:--+|—|-|:)?\s*(.*?)\s*$",
+    r"(?i)^\s*([A-Za-z]{1,3})\s*-+\s*CH\b\s*-+\s*(.*?)\s*$",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,6 +22,8 @@ pub enum Channel {
     Guild,
     Auction,
     Raid,
+    Say,
+    Tell,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,7 +44,8 @@ pub enum ChainCommand {
     Skip { number: Option<u32> },
     Back { number: Option<u32> },
     ResetChain,
-    Take { number: u32 },
+    Take { number: u32, player: Option<String> },
+    TakeNext { player: Option<String> },
     Move { from: u32, to: u32 },
     ChainInterval { seconds: f64, tank: Option<String> },
     StartChain { tank: Option<String> },
@@ -76,17 +80,21 @@ pub enum ParseResult {
         message: String,
         rampage: bool,
     },
-    YouCast,
     Ignored,
 }
 
 pub struct Parser {
     ch_patterns: Vec<Regex>,
     rch_patterns: Vec<Regex>,
+    chain_tag: String,
 }
 
 impl Parser {
     pub fn new() -> Self {
+        Self::with_chain_tag("GG")
+    }
+
+    pub fn with_chain_tag(tag: impl AsRef<str>) -> Self {
         Self {
             ch_patterns: CH_PATTERNS
                 .iter()
@@ -96,13 +104,19 @@ impl Parser {
                 .iter()
                 .map(|pat| Regex::new(pat).expect("built-in RCH pattern"))
                 .collect(),
+            chain_tag: crate::config::normalize_chain_tag(tag.as_ref()),
         }
     }
 
+    pub fn set_chain_tag(&mut self, tag: &str) {
+        self.chain_tag = crate::config::normalize_chain_tag(tag);
+    }
+
+    fn accepts_tag(&self, message: &str) -> bool {
+        detect_tag(message).is_some_and(|tag| tag == self.chain_tag)
+    }
+
     pub fn parse_line(&self, line: &str, your_name: Option<&str>) -> ParseResult {
-        if is_you_casting_complete_heal(line) {
-            return ParseResult::YouCast;
-        }
         let Some(chat) = parse_chat_line(line, your_name) else {
             return ParseResult::Ignored;
         };
@@ -115,13 +129,13 @@ impl Parser {
         if let Some(call) = self.parse_ch_message(&chat.message, &chat.speaker, chat.is_you) {
             return ParseResult::CompleteHeal(call);
         }
-        if looks_like_rch_macro(&chat.message) {
+        if looks_like_rch_macro(&chat.message, &self.chain_tag) {
             ParseResult::MalformedHeal {
                 speaker: chat.speaker,
                 message: chat.message,
                 rampage: true,
             }
-        } else if looks_like_ch_macro(&chat.message) {
+        } else if looks_like_ch_macro(&chat.message, &self.chain_tag) {
             ParseResult::MalformedHeal {
                 speaker: chat.speaker,
                 message: chat.message,
@@ -140,6 +154,9 @@ impl Parser {
     ) -> Option<CompleteHealCall> {
         for re in &self.ch_patterns {
             if let Some(caps) = re.captures(message.trim()) {
+                if !self.accepts_tag(message) {
+                    return None;
+                }
                 let number = caps.get(1)?.as_str().parse().ok()?;
                 if !(1..=999).contains(&number) {
                     continue;
@@ -170,7 +187,12 @@ impl Parser {
     ) -> Option<CompleteHealCall> {
         for re in &self.rch_patterns {
             if let Some(caps) = re.captures(message.trim()) {
-                let number = parse_letter_slot(caps.get(1)?.as_str())?;
+                if !self.accepts_tag(message) {
+                    return None;
+                }
+                let Some(number) = parse_letter_slot(caps.get(1)?.as_str()) else {
+                    continue;
+                };
                 let target = caps
                     .get(2)
                     .map(|m| sanitize_target(m.as_str()))
@@ -188,14 +210,6 @@ impl Parser {
         }
         None
     }
-}
-
-fn is_you_casting_complete_heal(line: &str) -> bool {
-    let rest = strip_timestamp(line).unwrap_or(line.trim());
-    let lower = rest.to_ascii_lowercase();
-    (lower.starts_with("you begin casting complete heal")
-        || lower.starts_with("you begin to cast complete heal"))
-        && !lower.contains("interrupt")
 }
 
 fn parse_chat_line(line: &str, your_name: Option<&str>) -> Option<ChatLine> {
@@ -247,7 +261,108 @@ fn parse_chat_line(line: &str, your_name: Option<&str>) -> Option<ChatLine> {
             });
         }
     }
-    None
+    parse_generic_quoted_speech(rest, your_name)
+}
+
+fn parse_generic_quoted_speech(rest: &str, your_name: Option<&str>) -> Option<ChatLine> {
+    let comma = rest.find(", '").or_else(|| rest.find(", \""))?;
+    let head = rest[..comma].trim();
+    let message = unquote_speech(rest[comma + 2..].trim())?;
+    if let Some(verbs) = head.strip_prefix("You ") {
+        return Some(ChatLine {
+            speaker: your_name.unwrap_or("You").to_string(),
+            is_you: true,
+            channel: channel_from_verbs(verbs),
+            message,
+        });
+    }
+    let speaker = head.split_whitespace().next()?;
+    if speaker.is_empty() || !speaker.chars().next()?.is_ascii_alphabetic() {
+        return None;
+    }
+    let lower = speaker.to_ascii_lowercase();
+    if matches!(lower.as_str(), "a" | "an" | "the") {
+        return None;
+    }
+    let verbs = head[speaker.len()..].trim();
+    let is_you = your_name.is_some_and(|n| n.eq_ignore_ascii_case(speaker));
+    Some(ChatLine {
+        speaker: speaker.to_string(),
+        is_you,
+        channel: channel_from_verbs(verbs),
+        message,
+    })
+}
+
+fn channel_from_verbs(verbs: &str) -> Channel {
+    let lower = verbs.to_ascii_lowercase();
+    if lower.contains("out of character") {
+        Channel::Ooc
+    } else if lower.contains("shout") {
+        Channel::Shout
+    } else if lower.contains("auction") {
+        Channel::Auction
+    } else if lower.contains("guild") {
+        Channel::Guild
+    } else if lower.contains("group") || lower.contains("party") {
+        Channel::Group
+    } else if lower.contains("raid") {
+        Channel::Raid
+    } else if lower.contains("tell") {
+        Channel::Tell
+    } else {
+        Channel::Say
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TestChannel {
+    Shout,
+    Ooc,
+    Group,
+    Guild,
+    Auction,
+    Raid,
+    Say,
+}
+
+pub fn format_test_log_line(speaker: &str, channel: TestChannel, message: &str) -> Result<String, String> {
+    let ts = "[Fri Sep 18 16:27:00 2026]";
+    let message = message.trim();
+    if message.is_empty() {
+        return Err("Type a chat message or command.".into());
+    }
+    let speaker = speaker.trim();
+    let as_you = speaker.is_empty() || speaker.eq_ignore_ascii_case("you");
+    let name = speaker.split_whitespace().next().unwrap_or("");
+    if !as_you && name.is_empty() {
+        return Err("Use YOU or a single character name.".into());
+    }
+    let quoted = if (message.starts_with('\'') && message.ends_with('\''))
+        || (message.starts_with('"') && message.ends_with('"'))
+    {
+        message.to_string()
+    } else {
+        format!("'{message}'")
+    };
+    let body = match (as_you, channel) {
+        (true, TestChannel::Shout) => format!("You shout, {quoted}"),
+        (true, TestChannel::Ooc) => format!("You say out of character, {quoted}"),
+        (true, TestChannel::Group) => format!("You tell the group, {quoted}"),
+        (true, TestChannel::Guild) => format!("You tell the guild, {quoted}"),
+        (true, TestChannel::Auction) => format!("You auction, {quoted}"),
+        (true, TestChannel::Raid) => format!("You tell the raid, {quoted}"),
+        (true, TestChannel::Say) => format!("You say, {quoted}"),
+        (false, TestChannel::Shout) => format!("{name} shouts, {quoted}"),
+        (false, TestChannel::Ooc) => format!("{name} says out of character, {quoted}"),
+        (false, TestChannel::Group) => format!("{name} tells the group, {quoted}"),
+        (false, TestChannel::Guild) => format!("{name} tells the guild, {quoted}"),
+        (false, TestChannel::Auction) => format!("{name} auctions, {quoted}"),
+        (false, TestChannel::Raid) => format!("{name} tells the raid, {quoted}"),
+        (false, TestChannel::Say) => format!("{name} says, {quoted}"),
+    };
+    Ok(format!("{ts} {body}"))
 }
 
 fn strip_timestamp(line: &str) -> Option<&str> {
@@ -309,7 +424,7 @@ pub fn parse_chain_command(message: &str) -> Option<(ChainCommand, ChainKind)> {
             },
             ChainKind::Cleric,
         )),
-        "!rmt" => Some((
+        "!rt" => Some((
             ChainCommand::MainTank {
                 tank: parts.next()?.to_string(),
             },
@@ -321,37 +436,18 @@ pub fn parse_chain_command(message: &str) -> Option<(ChainCommand, ChainKind)> {
             },
             ChainKind::Cleric,
         )),
-        "!rot" => Some((
-            ChainCommand::OffTank {
-                tank: parts.next()?.to_string(),
-            },
-            ChainKind::Rampage,
-        )),
         "!split" => Some((
             ChainCommand::Split {
                 number: parse_slot(parts.next()?)?,
             },
             ChainKind::Cleric,
         )),
-        "!rsplit" => Some((
-            ChainCommand::Split {
-                number: parse_rampage_slot(parts.next()?)?,
-            },
-            ChainKind::Rampage,
-        )),
         "!tank" => tank_range(&mut parts, ChainKind::Cleric, parse_slot),
-        "!rtank" => tank_range(&mut parts, ChainKind::Rampage, parse_rampage_slot),
         "!untank" => Some((
             ChainCommand::Untank {
                 tank: parts.next()?.to_string(),
             },
             ChainKind::Cleric,
-        )),
-        "!runtank" => Some((
-            ChainCommand::Untank {
-                tank: parts.next()?.to_string(),
-            },
-            ChainKind::Rampage,
         )),
         "!skip" => match parts.next() {
             None => Some((ChainCommand::Skip { number: None }, ChainKind::Both)),
@@ -360,6 +456,7 @@ pub fn parse_chain_command(message: &str) -> Option<(ChainCommand, ChainKind)> {
                 Some((ChainCommand::Skip { number: Some(number) }, kind))
             }
         },
+        // Old rampage-only names; letters on !skip / !back / !take / !move are enough.
         "!rskip" => Some((
             ChainCommand::Skip {
                 number: parse_optional_rampage_slot(parts.next())?,
@@ -380,19 +477,39 @@ pub fn parse_chain_command(message: &str) -> Option<(ChainCommand, ChainKind)> {
             ChainKind::Rampage,
         )),
         "!reset-chain" | "!resetchain" => Some((ChainCommand::ResetChain, ChainKind::Cleric)),
-        "!rreset-chain" | "!rresetchain" | "!rreset" => {
-            Some((ChainCommand::ResetChain, ChainKind::Rampage))
-        }
-        "!take" => {
-            let (number, kind) = parse_typed_slot(parts.next()?)?;
-            Some((ChainCommand::Take { number }, kind))
-        }
-        "!rtake" => Some((
-            ChainCommand::Take {
-                number: parse_rampage_slot(parts.next()?)?,
-            },
-            ChainKind::Rampage,
-        )),
+        "!take" => match parts.next() {
+            None => Some((ChainCommand::TakeNext { player: None }, ChainKind::Cleric)),
+            Some(raw) => {
+                if let Some((number, kind)) = parse_typed_slot(raw) {
+                    Some((
+                        ChainCommand::Take {
+                            number,
+                            player: optional_player(parts.next()),
+                        },
+                        kind,
+                    ))
+                } else if raw.chars().all(|c| c.is_ascii_digit()) {
+                    None
+                } else {
+                    Some((
+                        ChainCommand::TakeNext {
+                            player: optional_player(Some(raw)),
+                        },
+                        ChainKind::Cleric,
+                    ))
+                }
+            }
+        },
+        "!rtake" => match parts.next() {
+            None => Some((ChainCommand::TakeNext { player: None }, ChainKind::Rampage)),
+            Some(raw) => Some((
+                ChainCommand::Take {
+                    number: parse_rampage_slot(raw)?,
+                    player: optional_player(parts.next()),
+                },
+                ChainKind::Rampage,
+            )),
+        },
         "!move" => typed_move(&mut parts),
         "!rmove" => Some((
             ChainCommand::Move {
@@ -407,7 +524,7 @@ pub fn parse_chain_command(message: &str) -> Option<(ChainCommand, ChainKind)> {
             ChainCommand::StartChain {
                 tank: parts.next().map(|s| s.to_string()),
             },
-            ChainKind::Cleric,
+            ChainKind::Both,
         )),
         "!rstartchain" | "!rstart-chain" => Some((
             ChainCommand::StartChain {
@@ -415,13 +532,13 @@ pub fn parse_chain_command(message: &str) -> Option<(ChainCommand, ChainKind)> {
             },
             ChainKind::Rampage,
         )),
-        "!endchain" | "!end-chain" => Some((
+        "!stopchain" | "!stop-chain" | "!endchain" | "!end-chain" => Some((
             ChainCommand::EndChain {
                 tank: parts.next().map(|s| s.to_string()),
             },
-            ChainKind::Cleric,
+            ChainKind::Both,
         )),
-        "!rendchain" | "!rend-chain" => Some((
+        "!rstopchain" | "!rstop-chain" | "!rendchain" | "!rend-chain" => Some((
             ChainCommand::EndChain {
                 tank: parts.next().map(|s| s.to_string()),
             },
@@ -431,7 +548,7 @@ pub fn parse_chain_command(message: &str) -> Option<(ChainCommand, ChainKind)> {
             ChainCommand::StartChain {
                 tank: optional_named_tank(&mut parts),
             },
-            ChainKind::Cleric,
+            ChainKind::Both,
         )),
         "!rstart" => Some((
             ChainCommand::StartChain {
@@ -439,13 +556,13 @@ pub fn parse_chain_command(message: &str) -> Option<(ChainCommand, ChainKind)> {
             },
             ChainKind::Rampage,
         )),
-        "!end" => Some((
+        "!stop" | "!end" => Some((
             ChainCommand::EndChain {
                 tank: optional_named_tank(&mut parts),
             },
-            ChainKind::Cleric,
+            ChainKind::Both,
         )),
-        "!rend" => Some((
+        "!rstop" | "!rend" => Some((
             ChainCommand::EndChain {
                 tank: optional_named_tank(&mut parts),
             },
@@ -453,6 +570,14 @@ pub fn parse_chain_command(message: &str) -> Option<(ChainCommand, ChainKind)> {
         )),
         _ => None,
     }
+}
+
+fn optional_player(raw: Option<&str>) -> Option<String> {
+    let name = raw?.trim();
+    if name.is_empty() || name.starts_with('!') {
+        return None;
+    }
+    Some(name.to_string())
 }
 
 fn tank_range(
@@ -563,34 +688,34 @@ fn sanitize_target(raw: &str) -> String {
 }
 
 fn detect_tag(message: &str) -> Option<String> {
-    let upper = message.to_ascii_uppercase();
-    for tag in ["GG", "CC"] {
-        if upper.split_whitespace().any(|w| w == tag) {
-            return Some(tag.to_string());
+    let first = message.split_whitespace().next()?;
+    if (2..=4).contains(&first.len()) && first.chars().all(|c| c.is_ascii_alphabetic()) {
+        let upper = first.to_ascii_uppercase();
+        if upper != "CH" && upper != "RCH" {
+            return Some(upper);
         }
     }
     None
 }
 
-fn looks_like_rch_macro(message: &str) -> bool {
+fn looks_like_rch_macro(message: &str, chain_tag: &str) -> bool {
+    if !detect_tag(message).is_some_and(|tag| tag == chain_tag) {
+        return false;
+    }
     let upper = message.to_ascii_uppercase();
     upper
         .split(|c: char| !c.is_ascii_alphabetic())
         .any(|w| w == "RCH")
 }
 
-fn looks_like_ch_macro(message: &str) -> bool {
-    let upper = message.to_ascii_uppercase();
-    let has_ch = upper
-        .split(|c: char| !c.is_ascii_alphabetic())
-        .any(|w| w == "CH");
-    if !has_ch {
+fn looks_like_ch_macro(message: &str, chain_tag: &str) -> bool {
+    if !detect_tag(message).is_some_and(|tag| tag == chain_tag) {
         return false;
     }
-    let has_tag = upper.split_whitespace().any(|w| w == "GG" || w == "CC");
-    let has_digits = message.chars().any(|c| c.is_ascii_digit());
-    let has_sep = message.contains("--") || message.contains('—');
-    has_tag || has_digits || has_sep
+    let upper = message.to_ascii_uppercase();
+    upper
+        .split(|c: char| !c.is_ascii_alphabetic())
+        .any(|w| w == "CH")
 }
 
 #[cfg(test)]
@@ -670,10 +795,13 @@ mod tests {
             "Hanbox tells the guild, 'GG 001 CH -- Beefwich'",
             "Hanbox auctions, 'GG 001 CH -- Beefwich'",
             "Hanbox tells the raid, 'GG 001 CH -- Beefwich'",
+            "Hanbox says, 'GG 001 CH -- Beefwich'",
+            "Hanbox tells you, 'GG 001 CH -- Beefwich'",
             "You say out of character, 'GG 001 CH -- Beefwich'",
             "You tell the group, 'GG 001 CH -- Beefwich'",
             "You auction, 'GG 001 CH -- Beefwich'",
             "You tell the raid, 'GG 001 CH -- Beefwich'",
+            "You say, 'GG 001 CH -- Beefwich'",
         ];
         for sample in samples {
             let line = format!("[Fri Sep 18 16:27:00 2026] {sample}");
@@ -687,14 +815,29 @@ mod tests {
     }
 
     #[test]
-    fn say_channel_is_ignored() {
-        assert!(matches!(
-            line("[Fri Sep 18 16:27:00 2026] Hanbox says, 'GG 001 CH -- Beefwich'"),
-            ParseResult::Ignored
-        ));
+    fn say_and_tell_channels_are_accepted() {
+        let ParseResult::CompleteHeal(call) = line(
+            "[Fri Sep 18 16:27:00 2026] Hanbox says, 'GG 001 CH -- Beefwich'",
+        ) else {
+            panic!("named say");
+        };
+        assert_eq!(call.number, 1);
+        assert_eq!(call.speaker, "Hanbox");
         assert!(matches!(
             line("[Fri Sep 18 16:27:00 2026] You say, '!startchain'"),
-            ParseResult::Ignored
+            ParseResult::Command(ChainCommand::StartChain { tank: None }, _, true, ChainKind::Both)
+        ));
+        assert!(matches!(
+            line("[Fri Sep 18 16:27:00 2026] Two tells you, '!take 002'"),
+            ParseResult::Command(
+                ChainCommand::Take {
+                    number: 2,
+                    player: None
+                },
+                _,
+                false,
+                ChainKind::Cleric
+            )
         ));
     }
 
@@ -702,8 +845,6 @@ mod tests {
     fn parse_ch_message_variations() {
         let samples = [
             "GG CH 001 -- Beefwich",
-            "CC 001 CH -- Beefwich",
-            "001 CH -- Beefwich",
             "GG 001 CH --Beefwich",
             "gg 1 ch - Beefwich",
             "GG 001 CH : Beefwich",
@@ -721,10 +862,67 @@ mod tests {
     }
 
     #[test]
+    fn parse_real_p99_log_ch_and_rch_lines() {
+        let call = heal(
+            "[Fri Sep 18 19:15:24 2026] You say out of character, 'GG 001 CH -- Portlia'",
+        );
+        assert!(call.is_you);
+        assert_eq!(call.number, 1);
+        assert_eq!(call.target, "Portlia");
+        assert_eq!(call.tag.as_deref(), Some("GG"));
+
+        let call = heal("[Fri Sep 18 15:02:34 2026] You shout, 'GG 008 CH -- Moonglade'");
+        assert_eq!(call.number, 8);
+        assert_eq!(call.target, "Moonglade");
+
+        let call = heal("[Fri Sep 18 14:54:00 2026] Nickopol shouts, 'GG  006 CH  -- Braillard'");
+        assert_eq!(call.number, 6);
+        assert_eq!(call.target, "Braillard");
+
+        assert!(matches!(
+            shout("CA 015 CH -- Tennesseee"),
+            ParseResult::Ignored
+        ));
+        assert!(matches!(shout("ST 002 CH -- Gratton"), ParseResult::Ignored));
+        assert!(matches!(shout("SS 001 CH -- Tank"), ParseResult::Ignored));
+        assert!(matches!(shout("001 CH -- Beefwich"), ParseResult::Ignored));
+
+        let ParseResult::RampageHeal(call) = line(
+            "[Fri Sep 18 16:27:00 2026] Curaja shouts, 'GG RCH AAA -- Beefwich'",
+        ) else {
+            panic!("gg rch");
+        };
+        assert_eq!(call.number, 1);
+        assert_eq!(call.target, "Beefwich");
+
+        assert!(matches!(shout("CA RCH AAA -- Mcganahan"), ParseResult::Ignored));
+        assert!(matches!(shout("LT AAA RCH -- Stilgard"), ParseResult::Ignored));
+        assert!(matches!(shout("ST HHH CH -- Kaido"), ParseResult::Ignored));
+        assert!(matches!(shout("QQQ - CH - Shinko"), ParseResult::Ignored));
+
+        let other = Parser::with_chain_tag("CA");
+        let ParseResult::CompleteHeal(call) = other.parse_line(
+            "[Fri Sep 18 16:27:00 2026] Hanbox shouts, 'CA 015 CH -- Tennesseee'",
+            Some("Clericone"),
+        ) else {
+            panic!("configured CA tag");
+        };
+        assert_eq!(call.number, 15);
+        assert_eq!(call.tag.as_deref(), Some("CA"));
+        assert!(matches!(
+            other.parse_line(
+                "[Fri Sep 18 16:27:00 2026] Hanbox shouts, 'GG 001 CH -- Portlia'",
+                Some("Clericone"),
+            ),
+            ParseResult::Ignored
+        ));
+    }
+
+    #[test]
     fn parse_double_quoted_shout() {
-        let call = heal(r#"[Fri Sep 18 16:27:00 2026] Hanbox shouts, "CC 002 CH -- Beefwich""#);
+        let call = heal(r#"[Fri Sep 18 16:27:00 2026] Hanbox shouts, "GG 002 CH -- Beefwich""#);
         assert_eq!(call.number, 2);
-        assert_eq!(call.tag.as_deref(), Some("CC"));
+        assert_eq!(call.tag.as_deref(), Some("GG"));
     }
 
     #[test]
@@ -744,7 +942,6 @@ mod tests {
         for message in [
             "GG CH -- Wreckognize",
             "GG CH Wreckognize",
-            "CH -- Wreckognize",
         ] {
             let ParseResult::MalformedHeal { speaker, message: raw, .. } = shout(message) else {
                 panic!("expected warning for {message}");
@@ -775,7 +972,7 @@ mod tests {
             ParseResult::Command(ChainCommand::StartChain { .. }, ..)
         ));
         assert!(matches!(
-            line("[Fri Sep 18 16:27:00 2026] You say out of character, '!endchain'"),
+            line("[Fri Sep 18 16:27:00 2026] You say out of character, '!stopchain'"),
             ParseResult::Command(ChainCommand::EndChain { .. }, ..)
         ));
         assert!(matches!(
@@ -799,7 +996,7 @@ mod tests {
             ParseResult::Command(ChainCommand::StartChain { .. }, ..)
         ));
         assert!(matches!(
-            line("[Fri Sep 18 16:27:00 2026] You tell your raid, '!end'"),
+            line("[Fri Sep 18 16:27:00 2026] You tell your raid, '!stop'"),
             ParseResult::Command(ChainCommand::EndChain { .. }, ..)
         ));
         assert!(matches!(
@@ -807,20 +1004,24 @@ mod tests {
             ParseResult::Command(ChainCommand::StartChain { .. }, ..)
         ));
         assert!(matches!(
-            line("[Fri Sep 18 16:27:00 2026] You say to the raid, '!end chain'"),
+            line("[Fri Sep 18 16:27:00 2026] You say to the raid, '!stop chain'"),
             ParseResult::Command(ChainCommand::EndChain { .. }, ..)
         ));
     }
 
     #[test]
-    fn you_begin_casting_complete_heal() {
+    fn you_begin_casting_complete_heal_is_ignored() {
         assert!(matches!(
             line("[Fri Sep 18 16:27:00 2026] You begin casting Complete Heal."),
-            ParseResult::YouCast
+            ParseResult::Ignored
         ));
         assert!(matches!(
             line("[Fri Sep 18 16:27:00 2026] You begin to cast Complete Heal."),
-            ParseResult::YouCast
+            ParseResult::Ignored
+        ));
+        assert!(matches!(
+            line("[Fri Sep 18 16:27:00 2026] You begin casting Complete Healing."),
+            ParseResult::Ignored
         ));
         assert!(matches!(
             line("[Fri Sep 18 16:27:00 2026] You begin casting Greater Healing."),
@@ -839,14 +1040,24 @@ mod tests {
         assert_eq!(speaker, "Leadcleric");
         assert!(!is_you);
 
-        let ParseResult::Command(ChainCommand::Take { number }, speaker, is_you, _) = line(
+        let ParseResult::Command(ChainCommand::Take { number, player, .. }, speaker, is_you, _) = line(
             r#"[Fri Sep 18 16:27:00 2026] You tell the guild, '!take 001'"#,
         ) else {
             panic!("take");
         };
         assert_eq!(number, 1);
+        assert_eq!(player, None);
         assert_eq!(speaker, "Clericone");
         assert!(is_you);
+
+        let ParseResult::Command(ChainCommand::Take { number, player, .. }, speaker, ..) = line(
+            r#"[Fri Sep 18 16:27:00 2026] You tell the guild, '!take 005 Portlia'"#,
+        ) else {
+            panic!("take named");
+        };
+        assert_eq!(number, 5);
+        assert_eq!(player.as_deref(), Some("Portlia"));
+        assert_eq!(speaker, "Clericone");
 
         let ParseResult::Command(ChainCommand::Move { from, to }, ..) = line(
             r#"[Fri Sep 18 16:27:00 2026] You tell your guild, '!move 001 002'"#,
@@ -881,7 +1092,7 @@ mod tests {
         ));
         assert!(matches!(
             line(r#"[Fri Sep 18 16:27:00 2026] You say to the guild, '!TAKE 8'"#),
-            ParseResult::Command(ChainCommand::Take { number: 8 }, ..)
+            ParseResult::Command(ChainCommand::Take { number: 8, player: None }, ..)
         ));
     }
 
@@ -898,7 +1109,25 @@ mod tests {
         );
         assert_eq!(parse_chain_command("!skip 0"), None);
         assert_eq!(parse_chain_command("!skip 1000"), None);
-        assert_eq!(parse_chain_command("!take abc"), None);
+        assert_eq!(parse_chain_command("!take 0"), None);
+        assert_eq!(parse_chain_command("!take 1000"), None);
+        assert_eq!(
+            parse_chain_command("!take"),
+            Some((ChainCommand::TakeNext { player: None }, ChainKind::Cleric))
+        );
+        assert_eq!(
+            parse_chain_command("!take Portlia"),
+            Some((
+                ChainCommand::TakeNext {
+                    player: Some("Portlia".into())
+                },
+                ChainKind::Cleric
+            ))
+        );
+        assert_eq!(
+            parse_chain_command("!rtake"),
+            Some((ChainCommand::TakeNext { player: None }, ChainKind::Rampage))
+        );
         assert_eq!(parse_chain_command("!move 001"), None);
         assert_eq!(parse_chain_command("!chain"), None);
         assert_eq!(parse_chain_command("!chain 0"), None);
@@ -915,27 +1144,35 @@ mod tests {
         );
         assert_eq!(
             parse_chain_command("!startchain"),
-            Some((ChainCommand::StartChain { tank: None }, ChainKind::Cleric))
+            Some((ChainCommand::StartChain { tank: None }, ChainKind::Both))
         );
         assert_eq!(
             parse_chain_command("!start"),
-            Some((ChainCommand::StartChain { tank: None }, ChainKind::Cleric))
+            Some((ChainCommand::StartChain { tank: None }, ChainKind::Both))
         );
         assert_eq!(
             parse_chain_command("!start chain"),
-            Some((ChainCommand::StartChain { tank: None }, ChainKind::Cleric))
+            Some((ChainCommand::StartChain { tank: None }, ChainKind::Both))
         );
         assert_eq!(
-            parse_chain_command("!end"),
-            Some((ChainCommand::EndChain { tank: None }, ChainKind::Cleric))
+            parse_chain_command("!stop"),
+            Some((ChainCommand::EndChain { tank: None }, ChainKind::Both))
         );
         assert_eq!(
-            parse_chain_command("!end chain"),
-            Some((ChainCommand::EndChain { tank: None }, ChainKind::Cleric))
+            parse_chain_command("!stop chain"),
+            Some((ChainCommand::EndChain { tank: None }, ChainKind::Both))
         );
         assert_eq!(
-            parse_chain_command("!end-chain"),
-            Some((ChainCommand::EndChain { tank: None }, ChainKind::Cleric))
+            parse_chain_command("!stop-chain"),
+            Some((ChainCommand::EndChain { tank: None }, ChainKind::Both))
+        );
+        assert_eq!(
+            parse_chain_command("!stopchain"),
+            Some((ChainCommand::EndChain { tank: None }, ChainKind::Both))
+        );
+        assert_eq!(
+            parse_chain_command("!endchain"),
+            Some((ChainCommand::EndChain { tank: None }, ChainKind::Both))
         );
         assert_eq!(
             parse_chain_command("!startchain Mluian"),
@@ -943,7 +1180,7 @@ mod tests {
                 ChainCommand::StartChain {
                     tank: Some("Mluian".into())
                 },
-                ChainKind::Cleric
+                ChainKind::Both
             ))
         );
         assert_eq!(
@@ -991,16 +1228,64 @@ mod tests {
         );
         assert_eq!(
             parse_chain_command("!take AAA"),
-            Some((ChainCommand::Take { number: 1 }, ChainKind::Rampage))
+            Some((ChainCommand::Take { number: 1, player: None }, ChainKind::Rampage))
         );
         assert_eq!(
             parse_chain_command("!rtake BBB"),
-            Some((ChainCommand::Take { number: 2 }, ChainKind::Rampage))
+            Some((ChainCommand::Take { number: 2, player: None }, ChainKind::Rampage))
+        );
+        assert_eq!(
+            parse_chain_command("!take 001 Portlia"),
+            Some((
+                ChainCommand::Take {
+                    number: 1,
+                    player: Some("Portlia".into())
+                },
+                ChainKind::Cleric
+            ))
+        );
+        assert_eq!(
+            parse_chain_command("!rtake CCC Curaja"),
+            Some((
+                ChainCommand::Take {
+                    number: 3,
+                    player: Some("Curaja".into())
+                },
+                ChainKind::Rampage
+            ))
+        );
+        assert_eq!(
+            parse_chain_command("!take AAA Hanbox"),
+            Some((
+                ChainCommand::Take {
+                    number: 1,
+                    player: Some("Hanbox".into())
+                },
+                ChainKind::Rampage
+            ))
         );
         assert_eq!(
             parse_chain_command("!rstartchain"),
             Some((ChainCommand::StartChain { tank: None }, ChainKind::Rampage))
         );
+        assert_eq!(
+            parse_chain_command("!rt Mluian"),
+            Some((
+                ChainCommand::MainTank {
+                    tank: "Mluian".into()
+                },
+                ChainKind::Rampage
+            ))
+        );
+        assert_eq!(parse_chain_command("!rt"), None);
+        assert_eq!(parse_chain_command("!rot Beefwich"), None);
+        assert_eq!(parse_chain_command("!rsplit CCC"), None);
+        assert_eq!(parse_chain_command("!rtank Beefwich AAA FFF"), None);
+        assert_eq!(parse_chain_command("!runtank Beefwich"), None);
+        assert_eq!(parse_chain_command("!rmt Mluian"), None);
+        assert_eq!(parse_chain_command("!rreset-chain"), None);
+        assert_eq!(parse_chain_command("!rresetchain"), None);
+        assert_eq!(parse_chain_command("!rreset"), None);
         assert_eq!(parse_letter_slot("AAA"), Some(1));
         assert_eq!(parse_letter_slot("c"), Some(3));
         assert_eq!(parse_letter_slot("ABC"), None);
@@ -1039,7 +1324,7 @@ mod tests {
         assert_eq!(call.number, 1);
         assert_eq!(call.target, "Mluian");
         let ParseResult::RampageHeal(call) = line(
-            "[Fri Sep 18 16:27:00 2026] You shout, 'CC RCH CCC -- Beefwich'",
+            "[Fri Sep 18 16:27:00 2026] You shout, 'GG RCH CCC -- Beefwich'",
         ) else {
             panic!("rch you");
         };
@@ -1072,13 +1357,92 @@ mod tests {
     }
 
     #[test]
+    fn format_test_log_line_matches_eq_speech() {
+        assert_eq!(
+            format_test_log_line("YOU", TestChannel::Shout, "!take 001").unwrap(),
+            "[Fri Sep 18 16:27:00 2026] You shout, '!take 001'"
+        );
+        assert_eq!(
+            format_test_log_line("Hanbox", TestChannel::Ooc, "GG 001 CH -- Beefwich").unwrap(),
+            "[Fri Sep 18 16:27:00 2026] Hanbox says out of character, 'GG 001 CH -- Beefwich'"
+        );
+        assert_eq!(
+            format_test_log_line("Portlia", TestChannel::Group, "!skip").unwrap(),
+            "[Fri Sep 18 16:27:00 2026] Portlia tells the group, '!skip'"
+        );
+        assert_eq!(
+            format_test_log_line("Curaja", TestChannel::Guild, "GG 014 CH -- Wreckognize").unwrap(),
+            "[Fri Sep 18 16:27:00 2026] Curaja tells the guild, 'GG 014 CH -- Wreckognize'"
+        );
+        assert_eq!(
+            format_test_log_line("you", TestChannel::Auction, "!take AAA").unwrap(),
+            "[Fri Sep 18 16:27:00 2026] You auction, '!take AAA'"
+        );
+        assert_eq!(
+            format_test_log_line("Two", TestChannel::Raid, "!startchain").unwrap(),
+            "[Fri Sep 18 16:27:00 2026] Two tells the raid, '!startchain'"
+        );
+        assert_eq!(
+            format_test_log_line("YOU", TestChannel::Say, "!take 001").unwrap(),
+            "[Fri Sep 18 16:27:00 2026] You say, '!take 001'"
+        );
+        assert!(format_test_log_line("YOU", TestChannel::Shout, "  ").is_err());
+    }
+
+    #[test]
+    fn format_test_log_line_parses_like_a_real_log() {
+        let you_take = format_test_log_line("YOU", TestChannel::Shout, "!take 001").unwrap();
+        assert!(matches!(
+            parser().parse_line(&you_take, Some("Portlia")),
+            ParseResult::Command(
+                ChainCommand::Take {
+                    number: 1,
+                    player: None
+                },
+                _,
+                true,
+                ChainKind::Cleric
+            )
+        ));
+        let named = format_test_log_line("Hanbox", TestChannel::Guild, "GG 001 CH -- Beefwich")
+            .unwrap();
+        let ParseResult::CompleteHeal(call) = parser().parse_line(&named, Some("Portlia")) else {
+            panic!("expected CH");
+        };
+        assert_eq!(call.speaker, "Hanbox");
+        assert!(!call.is_you);
+        assert_eq!(call.number, 1);
+        for channel in [
+            TestChannel::Shout,
+            TestChannel::Ooc,
+            TestChannel::Group,
+            TestChannel::Guild,
+            TestChannel::Auction,
+            TestChannel::Raid,
+            TestChannel::Say,
+        ] {
+            let line = format_test_log_line("YOU", channel, "!take 002").unwrap();
+            assert!(
+                matches!(
+                    parser().parse_line(&line, Some("Portlia")),
+                    ParseResult::Command(ChainCommand::Take { number: 2, .. }, _, true, _)
+                ),
+                "channel {channel:?} should parse"
+            );
+        }
+    }
+
+    #[test]
     fn looks_like_ch_macro_requires_more_than_the_word_ch() {
-        assert!(!looks_like_ch_macro("I like to CH in my spare time"));
-        assert!(looks_like_ch_macro("GG CH -- Tank"));
-        assert!(looks_like_ch_macro("CH 12"));
-        assert!(looks_like_ch_macro("complete CH --"));
-        assert!(!looks_like_ch_macro("GG AAA RCH -- Tank"));
-        assert!(looks_like_rch_macro("GG AAA RCH -- Tank"));
-        assert!(!looks_like_rch_macro("GG 001 CH -- Tank"));
+        assert!(!looks_like_ch_macro("I like to CH in my spare time", "GG"));
+        assert!(looks_like_ch_macro("GG CH -- Tank", "GG"));
+        assert!(!looks_like_ch_macro("CH 12", "GG"));
+        assert!(!looks_like_ch_macro("CA 015 CH -- Tank", "GG"));
+        assert!(looks_like_ch_macro("CA 015 CH -- Tank", "CA"));
+        assert!(!looks_like_ch_macro("complete CH --", "GG"));
+        assert!(!looks_like_ch_macro("GG AAA RCH -- Tank", "GG"));
+        assert!(looks_like_rch_macro("GG AAA RCH -- Tank", "GG"));
+        assert!(!looks_like_rch_macro("ST HHH CH -- Kaido", "GG"));
+        assert!(!looks_like_rch_macro("GG 001 CH -- Tank", "GG"));
     }
 }

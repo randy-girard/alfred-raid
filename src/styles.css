@@ -128,11 +128,58 @@ button {
   text-transform: uppercase;
 }
 
+.alerts {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 16px 0;
+  flex: 0 0 auto;
+}
+
+.alerts[hidden] {
+  display: none;
+}
+
+.alerts .banner {
+  margin-top: 0;
+}
+
 .banner {
   margin-top: 10px;
   padding: 10px 12px;
   border-radius: 10px;
   font-weight: 600;
+}
+
+.banner.dismissable:not([hidden]) {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.banner.dismissable > span {
+  flex: 1;
+  min-width: 0;
+}
+
+.banner-dismiss {
+  flex: 0 0 auto;
+  margin: -2px -4px -2px 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  opacity: 0.72;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 6px;
+  font: 700 16px/1 "Avenir Next", "Segoe UI", sans-serif;
+}
+
+.banner-dismiss:hover,
+.banner-dismiss:focus-visible {
+  opacity: 1;
+  background: rgba(255, 255, 255, 0.1);
 }
 
 .banner.next {
@@ -286,6 +333,31 @@ button {
   color: var(--heal);
 }
 
+.eta {
+  flex: 0 0 auto;
+  min-width: 3.6em;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.hit {
+  margin-top: 4px;
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.hit.late {
+  color: var(--warn);
+}
+
+.hit.early {
+  color: var(--heal);
+}
+
 .bar > span {
   display: block;
   height: 100%;
@@ -296,6 +368,19 @@ button {
 
 .slot.is-current .bar > span {
   background: linear-gradient(90deg, #3d7c88, var(--heal));
+}
+
+.bar-row.cast .bar > span {
+  background: linear-gradient(90deg, #2f6f7a, var(--heal));
+}
+
+.cast-eta {
+  flex: 0 0 auto;
+  min-width: 4.6em;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  color: var(--heal);
 }
 
 .time {
@@ -430,12 +515,14 @@ code {
 
 input,
 textarea,
+select,
 button {
   color: var(--text);
 }
 
 input:not([type="checkbox"]):not([type="radio"]),
-textarea {
+textarea,
+select {
   width: 100%;
   background: var(--panel-2);
   border: 1px solid var(--line);
@@ -498,6 +585,32 @@ button.primary {
   margin-bottom: 6px;
 }
 
+.cue-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.cue-option .check {
+  flex: 1;
+  min-width: 0;
+  margin-bottom: 0;
+}
+
+.cue-lead {
+  flex: 0 0 5.6em;
+  margin: 0;
+}
+
+.cue-lead span {
+  font-size: 11px;
+}
+
+.cue-lead input {
+  padding: 4px 8px;
+}
+
 .check span {
   flex: 1;
   min-width: 0;
@@ -510,10 +623,6 @@ button.primary {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 8px 10px;
-}
-
-.grid.three {
-  grid-template-columns: 1fr 1fr 1fr;
 }
 
 .grid .field {
@@ -554,6 +663,32 @@ button.primary {
   display: none;
 }
 
+.save-status.ok {
+  color: var(--heal);
+}
+
+#open-tester {
+  margin: 4px 0 8px;
+}
+
+.tester-hint {
+  margin: 0 0 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.preview {
+  margin: 10px 0 0;
+  padding: 8px 10px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--gold-2);
+  font: 11px/1.45 "SF Mono", ui-monospace, Menlo, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .status {
   display: flex;
   align-items: center;
@@ -578,4 +713,57 @@ button.primary {
 
 .dot.warn {
   background: var(--warn);
+}
+
+.setup {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(18, 20, 27, 0.88);
+}
+
+.setup[hidden] {
+  display: none;
+}
+
+.setup-card {
+  width: 100%;
+  max-width: 400px;
+  max-height: 100%;
+  overflow: auto;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 18px 16px 14px;
+  box-shadow: var(--shadow);
+}
+
+.setup-step {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.setup-card h2 {
+  margin: 0 0 8px;
+  font: 600 20px/1.2 "Iowan Old Style", Palatino, Georgia, serif;
+}
+
+.setup-card > section > p {
+  margin: 0 0 14px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.setup-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
 }

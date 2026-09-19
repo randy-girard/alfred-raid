@@ -9,6 +9,9 @@ export type SlotSnapshot = {
   remainingSeconds: number;
   progress: number;
   lastShoutMs: number | null;
+  lastCastMs: number | null;
+  castRemainingSeconds: number;
+  castProgress: number;
   offsetSeconds: number | null;
   tank: string | null;
 };
@@ -26,6 +29,8 @@ export type TankSnapshot = {
   isYou: boolean;
 };
 
+export type WarningKind = "other" | "slotTaken" | "wrongTarget" | "autoTake";
+
 export type ChainSnapshot = {
   tank: string | null;
   yourTank: string | null;
@@ -42,6 +47,8 @@ export type ChainSnapshot = {
   beatTick: number | null;
   warning: string | null;
   warningUrgent: boolean;
+  warningKind: WarningKind;
+  warningSpeech: string | null;
   tanks: TankSnapshot[];
   slots: SlotSnapshot[];
   slotFormat: "number" | "letter";
@@ -106,6 +113,13 @@ export function formatSlot(
   return format === "letter" ? padLetter(number) : padSlot(number);
 }
 
+export function spokenSlot(
+  number: number,
+  format: "number" | "letter" | null | undefined,
+): string {
+  return format === "letter" ? padLetter(number) : String(Math.round(number));
+}
+
 export type CommandHelp = {
   usage: string;
   aliases?: string[];
@@ -118,13 +132,13 @@ export const CHAIN_COMMANDS: CommandHelp[] = [
     usage: "!startchain",
     aliases: ["!start-chain", "!start", "!start chain"],
     optional: "tank",
-    effect: "Start iterating from now. Omit the tank to start every chain that has clerics; name one to start only that chain.",
+    effect: "Start CH and rampage from now. Omit the tank to start every chain that has clerics; name one to start only that tank.",
   },
   {
-    usage: "!endchain",
-    aliases: ["!end-chain", "!end", "!end chain"],
+    usage: "!stopchain",
+    aliases: ["!stop-chain", "!stop", "!stop chain"],
     optional: "tank",
-    effect: "Stop iterating. Cleric slots stay. Add a tank name to stop only that chain.",
+    effect: "Stop CH and rampage. Cleric slots stay. Add a tank name to stop only that tank.",
   },
   {
     usage: "!mt <tank>",
@@ -157,12 +171,13 @@ export const CHAIN_COMMANDS: CommandHelp[] = [
     effect: "Put your own slot back in on CH and rampage, or a specific 001 / AAA slot.",
   },
   {
-    usage: "!take <number>",
-    effect: "Move the speaker onto that number, leaving their old number empty. Does not start the clock.",
+    usage: "!take",
+    optional: "slot",
+    effect: "Omit the slot to take the next free CH number. Or pick one: !take 001, !take AAA, or name someone else: !take 001 Portlia. Does not start the clock.",
   },
   {
     usage: "!move <from> <to>",
-    effect: "Swap two numbers that are already set.",
+    effect: "Swap two slots that are already set. Numbers are CH, letters are rampage, for example !move AAA BBB.",
   },
   {
     usage: "!chain <seconds>",
@@ -178,66 +193,13 @@ export const CHAIN_COMMANDS: CommandHelp[] = [
 
 export const RAMPAGE_COMMANDS: CommandHelp[] = [
   {
-    usage: "!rstartchain",
-    aliases: ["!rstart-chain", "!rstart"],
-    optional: "tank",
-    effect: "Start the rampage chain from now. Same rules as !startchain.",
-  },
-  {
-    usage: "!rendchain",
-    aliases: ["!rend-chain", "!rend"],
-    optional: "tank",
-    effect: "Stop the rampage chain. Slots stay.",
-  },
-  {
-    usage: "!rmt <tank>",
-    effect: "Set the rampage main tank.",
-  },
-  {
-    usage: "!rot <tank>",
-    effect: "Set the rampage off tank. Follow with !rsplit.",
-  },
-  {
-    usage: "!rsplit <slot>",
-    effect: "Two-tank cut on the rampage chain, for example !rsplit CCC.",
-  },
-  {
-    usage: "!rtank <tank> <from> <to>",
-    effect: "Put a letter range on another rampage tank, for example !rtank Beefwich AAA FFF.",
-  },
-  {
-    usage: "!runtank <tank>",
-    effect: "Remove that rampage tank. Its slots fall back to the main tank.",
-  },
-  {
-    usage: "!skip",
-    aliases: ["!rskip"],
-    optional: "slot",
-    effect: "Skip your rampage slot, or a letter like AAA. Same command as CH; numbers go to the CH chain.",
-  },
-  {
-    usage: "!back",
-    aliases: ["!rback"],
-    optional: "slot",
-    effect: "Put your rampage slot back in, or a letter if you include one.",
-  },
-  {
-    usage: "!rtake <slot>",
-    effect: "Move onto that rampage letter. !take AAA also works. Does not start the clock.",
-  },
-  {
-    usage: "!rmove <from> <to>",
-    effect: "Swap two rampage letters that are already set. !move AAA BBB also works.",
+    usage: "!rt <tank>",
+    effect: "Set the rampage tank. Rampage has one tank; there is no off tank or split.",
   },
   {
     usage: "!rchain <seconds>",
     optional: "tank",
     effect: "Set the rampage interval, for example !rchain 2.",
-  },
-  {
-    usage: "!rreset-chain",
-    aliases: ["!rresetchain", "!rreset"],
-    effect: "Clear rampage slots and stop. Tank and interval stay.",
   },
 ];
 
@@ -262,9 +224,16 @@ export function commandListHtml(commands: CommandHelp[] = CHAIN_COMMANDS): strin
 
 export function formatOffset(seconds: number | null | undefined): string {
   if (seconds == null || Number.isNaN(seconds)) return "";
-  if (Math.abs(seconds) < 0.005) return "±0.00s";
-  const sign = seconds > 0 ? "+" : "";
-  return `${sign}${seconds.toFixed(2)}s`;
+  if (Math.abs(seconds) < 0.005) return "on time";
+  if (seconds > 0) return `late ${seconds.toFixed(2)}s`;
+  return `early ${Math.abs(seconds).toFixed(2)}s`;
+}
+
+export function offsetClassName(seconds: number | null | undefined): string {
+  if (seconds == null || Number.isNaN(seconds)) return "";
+  if (seconds > 0.005) return "late";
+  if (seconds < -0.005) return "early";
+  return "";
 }
 
 export function shouldShowYouBanner(opts: {
@@ -277,6 +246,22 @@ export function shouldShowYouBanner(opts: {
 }
 
 export type AlertMode = "sound" | "metronome" | "none";
+export type SetupStep = "eq" | "audio";
+
+export function firstRunSteps(opts: {
+  setupComplete?: boolean;
+  eqDirectory?: string | null;
+}): SetupStep[] {
+  if (opts.setupComplete) return [];
+  const steps: SetupStep[] = [];
+  if (!opts.eqDirectory?.trim()) steps.push("eq");
+  steps.push("audio");
+  return steps;
+}
+
+export function setupStepLabel(index: number, total: number): string {
+  return `Step ${index + 1} of ${total}`;
+}
 
 export function alertMode(opts: {
   soundEnabled: boolean;
@@ -313,6 +298,47 @@ export function shouldPlayClaimAlert(opts: {
   return opts.lastWarning !== opts.warning;
 }
 
+export function isAlertEnabled(opts: {
+  kind: WarningKind | null | undefined;
+  alertSlotTaken: boolean;
+  alertWrongTarget: boolean;
+}): boolean {
+  if (opts.kind === "slotTaken") return opts.alertSlotTaken;
+  if (opts.kind === "wrongTarget") return opts.alertWrongTarget;
+  return true;
+}
+
+export function shouldSpeakAutoTake(opts: {
+  enabled: boolean;
+  kind: WarningKind | null | undefined;
+  speech: string | null | undefined;
+  lastSpoken: string | null;
+}): boolean {
+  if (!opts.enabled || opts.kind !== "autoTake" || !opts.speech) return false;
+  return opts.lastSpoken !== opts.speech;
+}
+
+export function shouldSpeakWrongTarget(opts: {
+  enabled: boolean;
+  kind: WarningKind | null | undefined;
+  urgent: boolean;
+  warning: string | null | undefined;
+  lastSpoken: string | null;
+}): boolean {
+  if (!opts.enabled || opts.kind !== "wrongTarget" || !opts.urgent || !opts.warning) {
+    return false;
+  }
+  return opts.lastSpoken !== opts.warning;
+}
+
+export function shouldShowWarning(opts: {
+  warning: string | null | undefined;
+  dismissed: string | null;
+}): boolean {
+  if (!opts.warning) return false;
+  return opts.dismissed !== opts.warning;
+}
+
 export function shouldChime(opts: {
   eta: number;
   lead: number;
@@ -325,6 +351,10 @@ export function shouldChime(opts: {
   if (opts.eta > opts.lead) return false;
   if (opts.now - opts.lastChimeAt < 8000) return false;
   return true;
+}
+
+export function nextUpSpeech(seconds: number): string {
+  return seconds > 0 ? "GO SOON" : "GO NOW";
 }
 
 export function slotClassName(slot: SlotSnapshot): string {
@@ -371,6 +401,25 @@ export function eqDirStatusText(probe: EqDirectoryProbe): { kind: "ok" | "warn";
   };
 }
 
+export function applyCastTiming(
+  slot: SlotSnapshot,
+  castTimeSeconds: number,
+  now: number,
+): SlotSnapshot {
+  const start = slot.lastCastMs ?? slot.lastShoutMs;
+  if (!start) {
+    return { ...slot, lastCastMs: null, castRemainingSeconds: 0, castProgress: 0 };
+  }
+  const remaining = Math.max(0, castTimeSeconds - (now - start) / 1000);
+  const progress = castTimeSeconds > 0 ? Math.min(1, remaining / castTimeSeconds) : 0;
+  return {
+    ...slot,
+    lastCastMs: start,
+    castRemainingSeconds: remaining,
+    castProgress: progress,
+  };
+}
+
 function rotation(slots: SlotSnapshot[]): number[] {
   return slots
     .filter((slot) => !slot.skipped)
@@ -380,13 +429,13 @@ function rotation(slots: SlotSnapshot[]): number[] {
 
 export function rotateQueue(
   slots: SlotSnapshot[],
-  running: boolean,
+  _running: boolean,
   currentNumber: number | null | undefined,
   nextNumber: number | null | undefined,
 ): SlotSnapshot[] {
   if (slots.length <= 1) return slots;
   const ordered = [...slots].sort((a, b) => a.number - b.number);
-  const head = running ? currentNumber : (nextNumber ?? currentNumber);
+  const head = nextNumber ?? currentNumber;
   if (head == null) return ordered;
   const idx = ordered.findIndex((slot) => slot.number === head);
   if (idx <= 0) return ordered;
@@ -398,6 +447,7 @@ function scheduleSlots(
   startedAtMs: number,
   intervalSeconds: number,
   now: number,
+  castTimeSeconds: number,
 ): SlotSnapshot[] {
   const rot = rotation(slots);
   if (rot.length === 0 || intervalSeconds <= 0) return slots;
@@ -408,6 +458,7 @@ function scheduleSlots(
   const currentNumber = rot[idx];
   const nextNumber = rot[(idx + 1) % rot.length];
   const cycleSeconds = intervalSeconds * rot.length;
+  const solo = rot.length <= 1;
   return slots.map((slot) => {
     if (slot.skipped) {
       return { ...slot, isCurrent: false, isNext: false, remainingSeconds: 0, progress: 0 };
@@ -416,14 +467,27 @@ function scheduleSlots(
     if (slotIdx < 0) {
       return { ...slot, isCurrent: false, isNext: false, remainingSeconds: 0, progress: 0 };
     }
-    const steps = (slotIdx - idx + rot.length) % rot.length;
+    if (solo) {
+      const origin = slot.lastCastMs ?? slot.lastShoutMs ?? startedAtMs;
+      const remaining = Math.max(0, castTimeSeconds - (now - origin) / 1000);
+      const progress = castTimeSeconds > 0 ? Math.min(1, remaining / castTimeSeconds) : 0;
+      return {
+        ...slot,
+        isCurrent: slot.number === currentNumber,
+        isNext: false,
+        remainingSeconds: remaining,
+        progress,
+      };
+    }
+    let steps = (slotIdx - idx + rot.length) % rot.length;
+    if (steps === 0) steps = rot.length;
     const nextBeat = startedAtMs + (ticks + steps) * intervalMs;
     const remaining = Math.max(0, (nextBeat - now) / 1000);
     const progress = cycleSeconds > 0 ? Math.min(1, remaining / cycleSeconds) : 0;
     return {
       ...slot,
       isCurrent: slot.number === currentNumber,
-      isNext: slot.number === nextNumber,
+      isNext: slot.number === nextNumber && slot.number !== currentNumber,
       remainingSeconds: remaining,
       progress,
     };
@@ -440,6 +504,7 @@ function applySchedule(snapshot: ChainSnapshot, now: number): ChainSnapshot {
     snapshot.startedAtMs,
     snapshot.intervalSeconds,
     now,
+    snapshot.castTimeSeconds,
   );
   const you = slots.find((slot) => slot.isYou && !slot.skipped);
   const youCastIn = you ? you.remainingSeconds : null;
@@ -474,16 +539,20 @@ function applyAllTanks(snapshot: ChainSnapshot, now: number): ChainSnapshot {
     const tank = snapshot.tanks.find((item) => item.name === name);
     let scheduled = group;
     if (tank?.running && tank.startedAtMs != null) {
-      scheduled = scheduleSlots(group, tank.startedAtMs, tank.intervalSeconds, now);
+      scheduled = scheduleSlots(
+        group,
+        tank.startedAtMs,
+        tank.intervalSeconds,
+        now,
+        snapshot.castTimeSeconds,
+      );
     } else {
       scheduled = group.map((slot) => {
-        if (!slot.lastShoutMs) {
+        const start = slot.lastCastMs ?? slot.lastShoutMs;
+        if (!start) {
           return { ...slot, remainingSeconds: 0, progress: 0 };
         }
-        const remaining = Math.max(
-          0,
-          snapshot.castTimeSeconds - (now - slot.lastShoutMs) / 1000,
-        );
+        const remaining = Math.max(0, snapshot.castTimeSeconds - (now - start) / 1000);
         return {
           ...slot,
           remainingSeconds: remaining,
@@ -518,18 +587,25 @@ export function liveSnapshot(
 ): ChainSnapshot | null {
   if (!snapshot) return null;
   const splitView = !snapshot.yourTank && (snapshot.tanks?.length ?? 0) > 1;
-  if (splitView) {
-    return applyAllTanks(snapshot, now);
-  }
-  if (snapshot.running && snapshot.startedAtMs != null) {
-    return applySchedule(snapshot, now);
-  }
+  const live = splitView
+    ? applyAllTanks(snapshot, now)
+    : snapshot.running && snapshot.startedAtMs != null
+      ? applySchedule(snapshot, now)
+      : idleSnapshot(snapshot, now);
+  return {
+    ...live,
+    slots: live.slots.map((slot) => applyCastTiming(slot, live.castTimeSeconds, now)),
+  };
+}
+
+function idleSnapshot(snapshot: ChainSnapshot, now: number): ChainSnapshot {
   const cast = snapshot.castTimeSeconds;
   const slots = snapshot.slots.map((slot) => {
-    if (!slot.lastShoutMs) {
+    const start = slot.lastCastMs ?? slot.lastShoutMs;
+    if (!start) {
       return { ...slot, remainingSeconds: 0, progress: 0 };
     }
-    const remaining = Math.max(0, cast - (now - slot.lastShoutMs) / 1000);
+    const remaining = Math.max(0, cast - (now - start) / 1000);
     return {
       ...slot,
       remainingSeconds: remaining,

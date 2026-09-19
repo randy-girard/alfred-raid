@@ -3,17 +3,27 @@ import {
   escapeHtml,
   fileName,
   formatOffset,
+  offsetClassName,
   CHAIN_COMMANDS,
   RAMPAGE_COMMANDS,
   commandListHtml,
+  applyCastTiming,
   liveSnapshot,
   padSlot,
   padLetter,
   formatSlot,
+  spokenSlot,
   rotateQueue,
   alertMode,
+  firstRunSteps,
+  setupStepLabel,
   shouldChime,
+  nextUpSpeech,
   shouldPlayClaimAlert,
+  shouldShowWarning,
+  isAlertEnabled,
+  shouldSpeakWrongTarget,
+  shouldSpeakAutoTake,
   shouldShowYouBanner,
   shouldSpeakMetronome,
   slotClassName,
@@ -36,6 +46,9 @@ function slot(overrides: Partial<SlotSnapshot> = {}): SlotSnapshot {
     remainingSeconds: 0,
     progress: 0,
     lastShoutMs: null,
+    lastCastMs: null,
+    castRemainingSeconds: 0,
+    castProgress: 0,
     offsetSeconds: null,
     tank: "Mluian",
     ...overrides,
@@ -59,6 +72,8 @@ function snap(overrides: Partial<ChainSnapshot> = {}): ChainSnapshot {
     beatTick: null,
     warning: null,
     warningUrgent: false,
+    warningKind: "other",
+    warningSpeech: null,
     tanks: [],
     slotFormat: "number",
     slots: [
@@ -108,22 +123,26 @@ describe("helpers", () => {
     expect(padLetter(1)).toBe("AAA");
     expect(padLetter(3)).toBe("CCC");
     expect(formatSlot(2, "letter")).toBe("BBB");
+    expect(spokenSlot(1, "number")).toBe("1");
+    expect(spokenSlot(14, "number")).toBe("14");
+    expect(spokenSlot(1, null)).toBe("1");
+    expect(spokenSlot(2, "letter")).toBe("BBB");
   });
 
-  it("rotates a queue from the head number", () => {
+  it("rotates a queue from the next number", () => {
     const slots = [
       slot({ number: 1 }),
       slot({ number: 2, player: "Two", isYou: false }),
       slot({ number: 3, player: "Three", isYou: false }),
     ];
-    expect(rotateQueue(slots, true, 2, 3).map((s) => s.number)).toEqual([2, 3, 1]);
+    expect(rotateQueue(slots, true, 2, 3).map((s) => s.number)).toEqual([3, 1, 2]);
     expect(rotateQueue(slots, false, 1, 2).map((s) => s.number)).toEqual([2, 3, 1]);
   });
 
   it("lists every chain command and its effect", () => {
     expect(CHAIN_COMMANDS.map((cmd) => cmd.usage)).toEqual([
       "!startchain",
-      "!endchain",
+      "!stopchain",
       "!mt <tank>",
       "!ot <tank>",
       "!split <number>",
@@ -131,40 +150,40 @@ describe("helpers", () => {
       "!untank <tank>",
       "!skip",
       "!back",
-      "!take <number>",
+      "!take",
       "!move <from> <to>",
       "!chain <seconds>",
       "!reset-chain",
     ]);
     expect(CHAIN_COMMANDS.every((cmd) => cmd.effect.length > 12)).toBe(true);
     expect(RAMPAGE_COMMANDS.map((cmd) => cmd.usage)).toEqual([
-      "!rstartchain",
-      "!rendchain",
-      "!rmt <tank>",
-      "!rot <tank>",
-      "!rsplit <slot>",
-      "!rtank <tank> <from> <to>",
-      "!runtank <tank>",
-      "!skip",
-      "!back",
-      "!rtake <slot>",
-      "!rmove <from> <to>",
+      "!rt <tank>",
       "!rchain <seconds>",
-      "!rreset-chain",
     ]);
+    expect(commandListHtml(RAMPAGE_COMMANDS)).toContain("!rt &lt;tank&gt;");
+    expect(commandListHtml(RAMPAGE_COMMANDS)).not.toContain("!rot");
+    expect(commandListHtml(RAMPAGE_COMMANDS)).not.toContain("!rsplit");
+    expect(commandListHtml(RAMPAGE_COMMANDS)).not.toContain("!rtake");
+    expect(commandListHtml(RAMPAGE_COMMANDS)).not.toContain("!rskip");
+    expect(commandListHtml(RAMPAGE_COMMANDS)).not.toContain("!rstartchain");
+    expect(commandListHtml(RAMPAGE_COMMANDS)).not.toContain("!rstopchain");
+    expect(commandListHtml(RAMPAGE_COMMANDS)).not.toContain("!rendchain");
+    expect(commandListHtml(RAMPAGE_COMMANDS)).not.toContain("!rreset");
     expect(RAMPAGE_COMMANDS.every((cmd) => cmd.effect.length > 12)).toBe(true);
     const html = commandListHtml();
     expect(html).toContain("!startchain");
     expect(html).toContain("!start-chain");
+    expect(html).toContain("!stopchain");
+    expect(html).toContain("!stop-chain");
     expect(html).toContain("!split");
     expect(html).toContain("!ot");
-    expect(commandListHtml(RAMPAGE_COMMANDS)).toContain("!rtake");
-    expect(commandListHtml(RAMPAGE_COMMANDS)).toContain("!rstartchain");
+    expect(commandListHtml(RAMPAGE_COMMANDS)).toContain("!rchain");
     expect(html).toContain("!mt &lt;tank&gt;");
     expect(html).toContain("Skip your own slot");
+    expect(html).toContain("!take 001 Portlia");
+    expect(html).toContain("!take AAA");
     expect(html).toContain("[slot]");
     expect(html).toContain("optional");
-    expect(commandListHtml(RAMPAGE_COMMANDS)).toContain("!rskip");
   });
 
   it("picks one audio cue when both flags are set", () => {
@@ -174,11 +193,30 @@ describe("helpers", () => {
     expect(alertMode({ soundEnabled: false, metronomeEnabled: false })).toBe("none");
   });
 
+  it("walks first-run setup: EQ only if missing, then audio", () => {
+    expect(firstRunSteps({ setupComplete: true, eqDirectory: "" })).toEqual([]);
+    expect(firstRunSteps({ setupComplete: false, eqDirectory: "/eq" })).toEqual(["audio"]);
+    expect(firstRunSteps({ setupComplete: false, eqDirectory: "  " })).toEqual([
+      "eq",
+      "audio",
+    ]);
+    expect(firstRunSteps({ setupComplete: false, eqDirectory: "" })).toEqual([
+      "eq",
+      "audio",
+    ]);
+    expect(setupStepLabel(0, 2)).toBe("Step 1 of 2");
+    expect(setupStepLabel(1, 2)).toBe("Step 2 of 2");
+    expect(setupStepLabel(0, 1)).toBe("Step 1 of 1");
+  });
+
   it("formats timing offsets", () => {
     expect(formatOffset(null)).toBe("");
-    expect(formatOffset(0)).toBe("±0.00s");
-    expect(formatOffset(0.32)).toBe("+0.32s");
-    expect(formatOffset(-0.15)).toBe("-0.15s");
+    expect(formatOffset(0)).toBe("on time");
+    expect(formatOffset(0.32)).toBe("late 0.32s");
+    expect(formatOffset(-0.15)).toBe("early 0.15s");
+    expect(offsetClassName(0.32)).toBe("late");
+    expect(offsetClassName(-0.15)).toBe("early");
+    expect(offsetClassName(0)).toBe("");
   });
 
   it("shows the you banner while running or in the last 8 seconds idle", () => {
@@ -252,9 +290,17 @@ describe("helpers", () => {
     expect(shouldChime({ ...base, lastChimeAt: 9_000 })).toBe(false);
   });
 
+  it("speaks GO SOON when there is time left, otherwise GO NOW", () => {
+    expect(nextUpSpeech(0)).toBe("GO NOW");
+    expect(nextUpSpeech(-1)).toBe("GO NOW");
+    expect(nextUpSpeech(1)).toBe("GO SOON");
+    expect(nextUpSpeech(2)).toBe("GO SOON");
+    expect(nextUpSpeech(0.5)).toBe("GO SOON");
+  });
+
   it("plays a claim alert once when your number is taken", () => {
     const base = {
-      warning: "Two took your slot 001.",
+      warning: "002 is already taken.",
       urgent: true,
       lastWarning: null as string | null,
       armed: true,
@@ -263,6 +309,91 @@ describe("helpers", () => {
     expect(shouldPlayClaimAlert({ ...base, lastWarning: base.warning })).toBe(false);
     expect(shouldPlayClaimAlert({ ...base, urgent: false })).toBe(false);
     expect(shouldPlayClaimAlert({ ...base, armed: false })).toBe(false);
+  });
+
+  it("toggles slot-taken and wrong-target alerts independently", () => {
+    expect(
+      isAlertEnabled({
+        kind: "slotTaken",
+        alertSlotTaken: true,
+        alertWrongTarget: false,
+      }),
+    ).toBe(true);
+    expect(
+      isAlertEnabled({
+        kind: "slotTaken",
+        alertSlotTaken: false,
+        alertWrongTarget: true,
+      }),
+    ).toBe(false);
+    expect(
+      isAlertEnabled({
+        kind: "wrongTarget",
+        alertSlotTaken: false,
+        alertWrongTarget: true,
+      }),
+    ).toBe(true);
+    expect(
+      isAlertEnabled({
+        kind: "wrongTarget",
+        alertSlotTaken: true,
+        alertWrongTarget: false,
+      }),
+    ).toBe(false);
+    expect(
+      isAlertEnabled({
+        kind: "other",
+        alertSlotTaken: false,
+        alertWrongTarget: false,
+      }),
+    ).toBe(true);
+  });
+
+  it("speaks wrong-target once when it is you", () => {
+    const base = {
+      enabled: true,
+      kind: "wrongTarget" as const,
+      urgent: true,
+      warning: "001 is on Mluian, but the macro is for Portlia.",
+      lastSpoken: null as string | null,
+    };
+    expect(shouldSpeakWrongTarget(base)).toBe(true);
+    expect(shouldSpeakWrongTarget({ ...base, lastSpoken: base.warning })).toBe(false);
+    expect(shouldSpeakWrongTarget({ ...base, enabled: false })).toBe(false);
+    expect(shouldSpeakWrongTarget({ ...base, urgent: false })).toBe(false);
+    expect(shouldSpeakWrongTarget({ ...base, kind: "slotTaken" })).toBe(false);
+  });
+
+  it("speaks auto-take once until the assignment changes", () => {
+    const base = {
+      enabled: true,
+      kind: "autoTake" as const,
+      speech: "You got 3",
+      lastSpoken: null as string | null,
+    };
+    expect(shouldSpeakAutoTake(base)).toBe(true);
+    expect(shouldSpeakAutoTake({ ...base, lastSpoken: base.speech })).toBe(false);
+    expect(shouldSpeakAutoTake({ ...base, enabled: false })).toBe(false);
+    expect(shouldSpeakAutoTake({ ...base, kind: "wrongTarget" })).toBe(false);
+  });
+
+  it("hides a warning after it is dismissed until a new one arrives", () => {
+    expect(shouldShowWarning({ warning: null, dismissed: null })).toBe(false);
+    expect(
+      shouldShowWarning({ warning: "002 is already taken.", dismissed: null }),
+    ).toBe(true);
+    expect(
+      shouldShowWarning({
+        warning: "002 is already taken.",
+        dismissed: "002 is already taken.",
+      }),
+    ).toBe(false);
+    expect(
+      shouldShowWarning({
+        warning: "Could not skip 004.",
+        dismissed: "002 is already taken.",
+      }),
+    ).toBe(true);
   });
 
   it("builds slot class names", () => {
@@ -397,11 +528,68 @@ describe("liveSnapshot", () => {
     expect(live.nextNumber).toBe(1);
     expect(live.beatTick).toBe(1);
     expect(live.slots.find((s) => s.number === 2)?.isCurrent).toBe(false);
-    expect(live.slots.map((s) => s.number)).toEqual([3, 1, 2]);
+    expect(live.slots.map((s) => s.number)).toEqual([1, 2, 3]);
     expect(live.youCastIn).toBeGreaterThan(1);
   });
 
-  it("rotates so the cleric who is up is first and the last to go is last", () => {
+  it("counts down a solo cleric to the next beat", () => {
+    const live = liveSnapshot(
+      snap({
+        running: true,
+        startedAtMs: 10_000,
+        intervalSeconds: 2,
+        currentNumber: 1,
+        nextNumber: 1,
+        slots: [slot({ number: 1, isYou: true })],
+      }),
+      11_000,
+    )!;
+    expect(live.currentNumber).toBe(1);
+    expect(live.slots[0].isCurrent).toBe(true);
+    expect(live.slots[0].isNext).toBe(false);
+    expect(live.slots[0].remainingSeconds).toBe(9);
+    expect(live.youCastIn).toBe(9);
+  });
+
+  it("keeps a CH cast bar ticking while the chain is running", () => {
+    const live = liveSnapshot(
+      snap({
+        running: true,
+        startedAtMs: 10_000,
+        intervalSeconds: 2,
+        slots: [
+          slot({ number: 1, isYou: true }),
+          slot({
+            number: 2,
+            player: "Two",
+            isYou: false,
+            lastShoutMs: 12_000,
+            lastCastMs: 12_000,
+          }),
+        ],
+      }),
+      14_000,
+    )!;
+    const two = live.slots.find((s) => s.number === 2)!;
+    expect(two.castRemainingSeconds).toBe(8);
+    expect(two.castProgress).toBe(0.8);
+    expect(two.remainingSeconds).not.toBe(two.castRemainingSeconds);
+  });
+
+  it("starts the CH bar from lastCastMs", () => {
+    expect(
+      applyCastTiming(
+        slot({ lastCastMs: 5_000, lastShoutMs: null }),
+        10,
+        6_000,
+      ),
+    ).toMatchObject({
+      castRemainingSeconds: 9,
+      castProgress: 0.9,
+    });
+  });
+
+  it("puts next first and the cleric who just went last with a refilled bar", () => {
     const live = liveSnapshot(
       snap({
         running: true,
@@ -416,8 +604,15 @@ describe("liveSnapshot", () => {
       12_100,
     )!;
     expect(live.currentNumber).toBe(2);
-    expect(live.slots.map((s) => s.number)).toEqual([2, 3, 1]);
-    expect(live.slots[0]?.isCurrent).toBe(true);
+    expect(live.nextNumber).toBe(3);
+    expect(live.slots.map((s) => s.number)).toEqual([3, 1, 2]);
+    expect(live.slots[0]?.isNext).toBe(true);
+    expect(live.slots[0]?.isCurrent).toBe(false);
+    const justWent = live.slots[live.slots.length - 1]!;
+    expect(justWent.number).toBe(2);
+    expect(justWent.isCurrent).toBe(true);
+    expect(justWent.remainingSeconds).toBeCloseTo(5.9, 5);
+    expect(justWent.progress).toBeCloseTo(5.9 / 6, 5);
   });
 
   it("puts the next in line first when the chain is stopped", () => {

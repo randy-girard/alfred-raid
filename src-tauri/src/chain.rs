@@ -41,6 +41,16 @@ pub enum SlotFormat {
     Letter,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum WarningKind {
+    #[default]
+    Other,
+    SlotTaken,
+    WrongTarget,
+    AutoTake,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum TankKey {
     Main,
@@ -76,6 +86,8 @@ pub struct ChainState {
     pub warning: Option<String>,
     pub warning_at_ms: Option<u64>,
     pub warning_urgent: bool,
+    pub warning_kind: WarningKind,
+    pub warning_speech: Option<String>,
     slot_format: SlotFormat,
     shout_sync: bool,
 }
@@ -93,6 +105,9 @@ pub struct SlotSnapshot {
     pub remaining_seconds: f64,
     pub progress: f64,
     pub last_shout_ms: Option<u64>,
+    pub last_cast_ms: Option<u64>,
+    pub cast_remaining_seconds: f64,
+    pub cast_progress: f64,
     pub offset_seconds: Option<f64>,
     pub tank: Option<String>,
 }
@@ -130,6 +145,8 @@ pub struct ChainSnapshot {
     pub beat_tick: Option<u64>,
     pub warning: Option<String>,
     pub warning_urgent: bool,
+    pub warning_kind: WarningKind,
+    pub warning_speech: Option<String>,
     pub tanks: Vec<TankSnapshot>,
     pub slots: Vec<SlotSnapshot>,
     pub slot_format: SlotFormat,
@@ -163,6 +180,8 @@ impl ChainState {
             warning: None,
             warning_at_ms: None,
             warning_urgent: false,
+            warning_kind: WarningKind::Other,
+            warning_speech: None,
             slot_format: SlotFormat::Number,
             shout_sync: false,
         }
@@ -207,14 +226,19 @@ impl ChainState {
 
     pub fn apply_heal_at(&mut self, call: CompleteHealCall, now: u64) {
         self.clear_stale_warning_at(now);
-        let collision = self.claim_collision(call.number, &call.speaker);
+        let player = call.speaker;
+        let is_you = call.is_you || self.is_you(&player);
+        if self.occupied_by_other(call.number, &player) {
+            let msg = self.slot_taken_message(call.number, &player, is_you);
+            self.set_warning_at(msg, now, is_you, WarningKind::SlotTaken);
+            return;
+        }
+        let already_on = self.slot_number_for_player(&player).is_some();
         let key = self.tank_key_for(call.number);
         let was_new = !self.slots.contains_key(&call.number);
         let was_running = self.clock_running(&key);
         let prev_current = self.running_current(&key, now);
-        let player = call.speaker;
-        let is_you = call.is_you || self.is_you(&player);
-        let vacated = self.vacate_player(&player, call.number);
+        self.vacate_player(&player, call.number);
         let mut slot = ClericSlot::new(call.number, player);
         slot.target = if call.target.is_empty() {
             None
@@ -222,10 +246,6 @@ impl ChainState {
             Some(call.target)
         };
         slot.last_shout_ms = Some(now);
-        if is_you {
-            slot.last_actual_ms = vacated.last_actual_ms;
-            slot.last_offset_seconds = vacated.last_offset_seconds;
-        }
         let target_name = slot.target.clone().unwrap_or_default();
         self.slots.insert(call.number, slot);
         if was_running && self.shout_sync(&key) {
@@ -244,30 +264,14 @@ impl ChainState {
         } else if was_new {
             self.preserve_beat(key, now, prev_current);
         }
-        if !is_you {
-            self.record_actual(call.number, now);
+        self.record_actual(call.number, now);
+        if already_on && was_running {
+            if let Some(msg) = self.target_mismatch(call.number, &target_name) {
+                self.set_warning_at(msg, now, is_you, WarningKind::WrongTarget);
+                return;
+            }
         }
-        if let Some(msg) = collision
-            .as_ref()
-            .map(|(_, msg)| msg.clone())
-            .or_else(|| self.target_mismatch(call.number, &target_name))
-        {
-            let urgent = collision.as_ref().map(|(u, _)| *u).unwrap_or(false);
-            self.set_warning_at(msg, now, urgent);
-        } else {
-            self.clear_warning();
-        }
-    }
-
-    pub fn apply_you_cast(&mut self) {
-        self.apply_you_cast_at(now_ms());
-    }
-
-    pub fn apply_you_cast_at(&mut self, now: u64) {
-        let Some(number) = self.your_slot_number() else {
-            return;
-        };
-        self.record_actual(number, now);
+        self.clear_warning();
     }
 
     fn record_actual(&mut self, number: u32, actual: u64) {
@@ -352,25 +356,10 @@ impl ChainState {
                 self.clear_warning();
                 None
             }
-            ChainCommand::Take { number } => {
-                let collision = self.claim_collision(number, &speaker);
-                let key = self.tank_key_for(number);
-                let was_running = self.clock_running(&key);
-                let prev = self.running_current(&key, now);
-                let vacated = self.vacate_player(&speaker, number);
-                let mut slot = ClericSlot::new(number, speaker);
-                slot.last_actual_ms = vacated.last_actual_ms;
-                slot.last_offset_seconds = vacated.last_offset_seconds;
-                if vacated.old_number == Some(number) {
-                    slot.last_shout_ms = vacated.last_shout_ms;
-                }
-                self.slots.insert(number, slot);
-                if was_running {
-                    self.preserve_beat(key, now, prev);
-                }
-                self.apply_claim_collision(collision, now);
-                None
+            ChainCommand::Take { number, player } => {
+                self.take_slot(Some(number), player, speaker, now)
             }
+            ChainCommand::TakeNext { player } => self.take_slot(None, player, speaker, now),
             ChainCommand::Move { from, to } => {
                 if from == to {
                     return Some("Move needs two different numbers.".into());
@@ -421,47 +410,148 @@ impl ChainState {
     }
 
     pub fn set_warning(&mut self, warning: String) {
-        self.set_warning_at(warning, now_ms(), false);
+        self.set_warning_at(warning, now_ms(), false, WarningKind::Other);
     }
 
-    fn set_warning_at(&mut self, warning: String, now: u64, urgent: bool) {
+    fn set_warning_at(&mut self, warning: String, now: u64, urgent: bool, kind: WarningKind) {
         self.warning = Some(warning);
         self.warning_at_ms = Some(now);
         self.warning_urgent = urgent;
+        self.warning_kind = kind;
+        self.warning_speech = None;
     }
 
     fn clear_warning(&mut self) {
         self.warning = None;
         self.warning_at_ms = None;
         self.warning_urgent = false;
+        self.warning_kind = WarningKind::Other;
+        self.warning_speech = None;
     }
 
-    fn claim_collision(&self, number: u32, speaker: &str) -> Option<(bool, String)> {
-        let occupant = self.slots.get(&number)?;
-        if self.same_player(&occupant.player, speaker) {
+    fn occupied_by_other(&self, number: u32, speaker: &str) -> bool {
+        self.slots
+            .get(&number)
+            .is_some_and(|slot| !self.same_player(&slot.player, speaker))
+    }
+
+    fn slot_taken_message(&self, number: u32, speaker: &str, is_you: bool) -> String {
+        let slot = self.fmt_slot(number);
+        if is_you {
+            format!("{slot} is already taken.")
+        } else {
+            format!("{speaker}: {slot} is already taken.")
+        }
+    }
+
+    fn take_slot(
+        &mut self,
+        number: Option<u32>,
+        player: Option<String>,
+        speaker: String,
+        now: u64,
+    ) -> Option<String> {
+        let player = player.unwrap_or(speaker);
+        let is_you = self.is_you(&player);
+        let auto = number.is_none();
+        let number = match number {
+            Some(number) => number,
+            None => {
+                if let Some(existing) = self.slot_number_for_player(&player) {
+                    self.announce_auto_take(
+                        existing,
+                        &player,
+                        is_you,
+                        now,
+                        true,
+                    );
+                    return None;
+                }
+                match self.next_free_slot() {
+                    Some(number) => number,
+                    None => {
+                        let msg = if self.slot_format == SlotFormat::Letter {
+                            "No free rampage letters left."
+                        } else {
+                            "No free numbers left."
+                        };
+                        self.set_warning_at(msg.into(), now, is_you, WarningKind::AutoTake);
+                        return None;
+                    }
+                }
+            }
+        };
+        if self.occupied_by_other(number, &player) {
+            let msg = self.slot_taken_message(number, &player, is_you);
+            self.set_warning_at(msg, now, is_you, WarningKind::SlotTaken);
             return None;
         }
-        let old = occupant.player.clone();
-        let you_lost = self.is_you(&old);
-        let you_took = self.is_you(speaker);
-        let urgent = you_lost || you_took;
-        let slot = self.fmt_slot(number);
-        let msg = if you_lost {
-            format!("{speaker} took your slot {slot}.")
-        } else if you_took {
-            format!("You took {slot} from {old}.")
-        } else {
-            format!("{speaker} took {slot} from {old}.")
-        };
-        Some((urgent, msg))
-    }
-
-    fn apply_claim_collision(&mut self, collision: Option<(bool, String)>, now: u64) {
-        if let Some((urgent, msg)) = collision {
-            self.set_warning_at(msg, now, urgent);
+        let key = self.tank_key_for(number);
+        let was_running = self.clock_running(&key);
+        let prev = self.running_current(&key, now);
+        let vacated = self.vacate_player(&player, number);
+        let mut slot = ClericSlot::new(number, player.clone());
+        slot.last_actual_ms = vacated.last_actual_ms;
+        slot.last_offset_seconds = vacated.last_offset_seconds;
+        if vacated.old_number == Some(number) {
+            slot.last_shout_ms = vacated.last_shout_ms;
+        }
+        self.slots.insert(number, slot);
+        if was_running {
+            self.preserve_beat(key, now, prev);
+        }
+        if auto {
+            self.announce_auto_take(number, &player, is_you, now, false);
         } else {
             self.clear_warning();
         }
+        None
+    }
+
+    fn next_free_slot(&self) -> Option<u32> {
+        let max = match self.slot_format {
+            SlotFormat::Number => 999,
+            SlotFormat::Letter => 26,
+        };
+        (1..=max).find(|number| !self.slots.contains_key(number))
+    }
+
+    fn spoken_slot(&self, number: u32) -> String {
+        match self.slot_format {
+            SlotFormat::Number => number.to_string(),
+            SlotFormat::Letter => self.fmt_slot(number),
+        }
+    }
+
+    fn announce_auto_take(
+        &mut self,
+        number: u32,
+        player: &str,
+        is_you: bool,
+        now: u64,
+        already: bool,
+    ) {
+        let slot = self.fmt_slot(number);
+        let spoken = self.spoken_slot(number);
+        let (banner, speech) = if already {
+            if is_you {
+                (
+                    format!("You already have {slot}."),
+                    format!("You already have {spoken}"),
+                )
+            } else {
+                (
+                    format!("{player} already has {slot}."),
+                    format!("{player} already has {spoken}"),
+                )
+            }
+        } else if is_you {
+            (format!("You got {slot}."), format!("You got {spoken}"))
+        } else {
+            (format!("{player} got {slot}."), format!("{player} got {spoken}"))
+        };
+        self.set_warning_at(banner, now, is_you, WarningKind::AutoTake);
+        self.warning_speech = Some(speech);
     }
 
     fn same_player(&self, a: &str, b: &str) -> bool {
@@ -552,8 +642,19 @@ impl ChainState {
                 let (remaining, progress) = if skipped {
                     (0.0, 0.0)
                 } else if let Some(slot_beat) = &slot_beat {
-                    let cycle = self.interval_for(&key) * slot_beat.rotation.len() as f64;
-                    remaining_until_slot(slot.number, slot_beat, now, cycle)
+                    if slot_beat.rotation.len() <= 1 {
+                        let origin = slot.last_shout_ms.or(Some(slot_beat.start));
+                        let remaining = remaining_cast(origin, self.cast_time_seconds, now);
+                        let progress = if self.cast_time_seconds > 0.0 {
+                            (remaining / self.cast_time_seconds).clamp(0.0, 1.0)
+                        } else {
+                            0.0
+                        };
+                        (remaining, progress)
+                    } else {
+                        let cycle = self.interval_for(&key) * slot_beat.rotation.len() as f64;
+                        remaining_until_slot(slot.number, slot_beat, now, cycle)
+                    }
                 } else {
                     let remaining = remaining_cast(slot.last_shout_ms, self.cast_time_seconds, now);
                     let progress = if self.cast_time_seconds > 0.0 {
@@ -566,19 +667,33 @@ impl ChainState {
                 let (is_current, is_next) = if focused {
                     (
                         current_number == Some(slot.number),
-                        next_number == Some(slot.number),
+                        next_number == Some(slot.number) && current_number != Some(slot.number),
                     )
                 } else if let Some(slot_beat) = &slot_beat {
                     (
                         slot_beat.current == slot.number,
-                        slot_beat.next == slot.number,
+                        slot_beat.next == slot.number && slot_beat.current != slot.number,
                     )
                 } else {
                     let cur = self.clock_current(&key);
                     (
                         cur == Some(slot.number),
-                        cur.and_then(|c| self.next_after_in(&key, c)) == Some(slot.number),
+                        cur.and_then(|c| self.next_after_in(&key, c)) == Some(slot.number)
+                            && cur != Some(slot.number),
                     )
+                };
+                let last_cast_ms = cast_started_ms(slot);
+                let (cast_remaining, cast_progress) = match last_cast_ms {
+                    Some(at) => {
+                        let remaining = remaining_cast(Some(at), self.cast_time_seconds, now);
+                        let progress = if self.cast_time_seconds > 0.0 {
+                            (remaining / self.cast_time_seconds).clamp(0.0, 1.0)
+                        } else {
+                            0.0
+                        };
+                        (remaining, progress)
+                    }
+                    None => (0.0, 0.0),
                 };
                 SlotSnapshot {
                     number: slot.number,
@@ -591,6 +706,9 @@ impl ChainState {
                     remaining_seconds: remaining,
                     progress,
                     last_shout_ms: slot.last_shout_ms,
+                    last_cast_ms,
+                    cast_remaining_seconds: cast_remaining,
+                    cast_progress,
                     offset_seconds: slot.last_offset_seconds,
                     tank: Some(self.display_name(&key)),
                 }
@@ -605,6 +723,16 @@ impl ChainState {
             }
         });
         let warning_urgent = warning.is_some() && self.warning_urgent;
+        let warning_kind = if warning.is_some() {
+            self.warning_kind
+        } else {
+            WarningKind::Other
+        };
+        let warning_speech = if warning.is_some() {
+            self.warning_speech.clone()
+        } else {
+            None
+        };
         let tanks = self.tank_snapshots(now);
         let your_tank = self.your_slot_number().map(|_| self.display_name(&view));
 
@@ -624,6 +752,8 @@ impl ChainState {
             beat_tick,
             warning,
             warning_urgent,
+            warning_kind,
+            warning_speech,
             tanks,
             slots,
             slot_format: self.slot_format,
@@ -642,6 +772,14 @@ impl ChainState {
         }
         let key = self.tank_key_for(number);
         if let Some(beat) = beat {
+            if beat.rotation.len() <= 1 {
+                let slot = self.slots.get(&number)?;
+                return Some(remaining_cast(
+                    slot.last_shout_ms.or(Some(beat.start)),
+                    self.cast_time_seconds,
+                    now,
+                ));
+            }
             if !beat.rotation.contains(&number) {
                 return None;
             }
@@ -1268,9 +1406,15 @@ impl ChainState {
         if target.is_empty() {
             return None;
         }
-        let target_key = self.parse_tank_key(target)?;
         let slot_key = self.tank_key_for(number);
-        if target_key == slot_key {
+        let expected = match &slot_key {
+            TankKey::Main => self.tank.as_deref()?,
+            TankKey::Named(name) => name.as_str(),
+        };
+        if target.eq_ignore_ascii_case(expected) {
+            return None;
+        }
+        if self.parse_tank_key(target).as_ref() == Some(&slot_key) {
             return None;
         }
         Some(format!(
@@ -1286,8 +1430,14 @@ fn remaining_until_slot(number: u32, beat: &Beat, now: u64, cycle_seconds: f64) 
         return (0.0, 0.0);
     };
     let n = beat.rotation.len() as u64;
+    if n == 0 {
+        return (0.0, 0.0);
+    }
     let current_idx = beat.ticks % n;
-    let steps = (idx as u64 + n - current_idx) % n;
+    let mut steps = (idx as u64 + n - current_idx) % n;
+    if steps == 0 {
+        steps = n;
+    }
     let next_beat = beat.start + (beat.ticks + steps) * beat.interval_ms;
     let remaining = (next_beat as i128 - now as i128).max(0) as f64 / 1000.0;
     let progress = if cycle_seconds > 0.0 {
@@ -1318,6 +1468,15 @@ fn remaining_cast(last_shout_ms: Option<u64>, cast_time: f64, now: u64) -> f64 {
     (cast_time - elapsed).max(0.0)
 }
 
+fn cast_started_ms(slot: &ClericSlot) -> Option<u64> {
+    match (slot.last_shout_ms, slot.last_actual_ms) {
+        (Some(shout), Some(actual)) => Some(shout.max(actual)),
+        (Some(shout), None) => Some(shout),
+        (None, Some(actual)) => Some(actual),
+        _ => None,
+    }
+}
+
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1344,9 +1503,9 @@ mod tests {
     fn filled() -> ChainState {
         let mut chain = ChainState::new(2.0, 10.0);
         chain.set_your_name("Clericone".into());
-        chain.apply_command(ChainCommand::Take { number: 1 }, "Clericone".into());
-        chain.apply_command(ChainCommand::Take { number: 2 }, "Two".into());
-        chain.apply_command(ChainCommand::Take { number: 3 }, "Three".into());
+        chain.apply_command(ChainCommand::Take { player: None, number: 1 }, "Clericone".into());
+        chain.apply_command(ChainCommand::Take { player: None, number: 2 }, "Two".into());
+        chain.apply_command(ChainCommand::Take { player: None, number: 3 }, "Three".into());
         chain
     }
 
@@ -1371,7 +1530,7 @@ mod tests {
     fn take_moves_the_player_off_their_old_number() {
         let mut chain = filled();
         chain.apply_command(ChainCommand::Skip { number: Some(1) }, "Lead".into());
-        chain.apply_command(ChainCommand::Take { number: 8 }, "You".into());
+        chain.apply_command(ChainCommand::Take { player: None, number: 8 }, "You".into());
         assert!(chain.slots.get(&1).is_none());
         assert!(!chain.skipped.contains(&1));
         assert_eq!(chain.slots.get(&8).unwrap().player, "You");
@@ -1384,7 +1543,7 @@ mod tests {
     fn take_does_not_start_a_timer() {
         let mut chain = ChainState::new(2.0, 10.0);
         chain.set_your_name("Clericone".into());
-        chain.apply_command_at(ChainCommand::Take { number: 1 }, "You".into(), 1_000);
+        chain.apply_command_at(ChainCommand::Take { player: None, number: 1 }, "You".into(), 1_000);
         let snap = chain.snapshot_at(1_500);
         assert!(!snap.running);
         assert_eq!(snap.current_number, None);
@@ -1400,36 +1559,115 @@ mod tests {
     fn retaking_the_same_number_does_not_clear_its_skip() {
         let mut chain = filled();
         chain.apply_command(ChainCommand::Skip { number: Some(1) }, "Lead".into());
-        chain.apply_command(ChainCommand::Take { number: 1 }, "You".into());
+        chain.apply_command(ChainCommand::Take { player: None, number: 1 }, "You".into());
         assert!(chain.skipped.contains(&1));
         assert_eq!(chain.slots.get(&1).unwrap().player, "You");
     }
 
     #[test]
-    fn take_replaces_the_occupant_of_a_number() {
+    fn take_can_assign_another_player_by_name() {
         let mut chain = filled();
-        chain.apply_command(ChainCommand::Take { number: 2 }, "Clericone".into());
-        assert_eq!(chain.slots.get(&2).unwrap().player, "Clericone");
-        assert!(chain.slots.get(&1).is_none());
-        assert!(chain.warning.as_deref().unwrap().contains("002"));
-        assert!(chain.warning_urgent);
+        chain.apply_command(
+            ChainCommand::Take {
+                number: 8,
+                player: Some("Portlia".into()),
+            },
+            "Clericone".into(),
+        );
+        assert_eq!(chain.slots.get(&8).unwrap().player, "Portlia");
+        assert_eq!(chain.slots.get(&1).unwrap().player, "Clericone");
+        chain.apply_command(
+            ChainCommand::Take {
+                number: 9,
+                player: Some("Two".into()),
+            },
+            "Lead".into(),
+        );
+        assert!(chain.slots.get(&2).is_none());
+        assert_eq!(chain.slots.get(&9).unwrap().player, "Two");
     }
 
     #[test]
-    fn claiming_an_occupied_number_warns_and_is_urgent_for_you() {
+    fn take_occupied_does_not_replace_the_occupant() {
+        let mut chain = filled();
+        chain.apply_command(ChainCommand::Take { player: None, number: 2 }, "Clericone".into());
+        assert_eq!(chain.slots.get(&2).unwrap().player, "Two");
+        assert_eq!(chain.slots.get(&1).unwrap().player, "Clericone");
+        assert_eq!(chain.warning.as_deref(), Some("002 is already taken."));
+        assert!(chain.warning_urgent);
+        assert_eq!(chain.warning_kind, WarningKind::SlotTaken);
+    }
+
+    #[test]
+    fn take_without_a_number_assigns_the_next_free_slot() {
+        let mut chain = ChainState::new(2.0, 10.0);
+        chain.set_your_name("Clericone".into());
+        chain.apply_command(ChainCommand::TakeNext { player: None }, "Clericone".into());
+        assert_eq!(chain.slots.get(&1).unwrap().player, "Clericone");
+        assert_eq!(chain.warning.as_deref(), Some("You got 001."));
+        assert_eq!(chain.warning_speech.as_deref(), Some("You got 1"));
+        assert_eq!(chain.warning_kind, WarningKind::AutoTake);
+        assert!(chain.warning_urgent);
+
+        chain.apply_command(ChainCommand::TakeNext { player: None }, "Two".into());
+        assert_eq!(chain.slots.get(&2).unwrap().player, "Two");
+        assert_eq!(chain.warning.as_deref(), Some("Two got 002."));
+        assert_eq!(chain.warning_speech.as_deref(), Some("Two got 2"));
+        assert!(!chain.warning_urgent);
+
+        chain.apply_command(ChainCommand::Take { player: None, number: 4 }, "Three".into());
+        chain.apply_command(ChainCommand::TakeNext { player: None }, "Four".into());
+        assert_eq!(chain.slots.get(&3).unwrap().player, "Four");
+        assert_eq!(chain.warning.as_deref(), Some("Four got 003."));
+
+        chain.apply_command(ChainCommand::TakeNext { player: None }, "Clericone".into());
+        assert_eq!(chain.slots.get(&1).unwrap().player, "Clericone");
+        assert_eq!(chain.warning.as_deref(), Some("You already have 001."));
+        assert_eq!(chain.warning_speech.as_deref(), Some("You already have 1"));
+    }
+
+    #[test]
+    fn rampage_take_without_a_letter_assigns_the_next_free_slot() {
+        let mut chain = ChainState::new_rampage(2.0, 10.0);
+        chain.set_your_name("Clericone".into());
+        chain.apply_command(ChainCommand::TakeNext { player: None }, "Clericone".into());
+        chain.apply_command(ChainCommand::TakeNext { player: None }, "Two".into());
+        assert_eq!(chain.slots.get(&1).unwrap().player, "Clericone");
+        assert_eq!(chain.slots.get(&2).unwrap().player, "Two");
+        assert_eq!(chain.warning.as_deref(), Some("Two got BBB."));
+        assert_eq!(chain.warning_speech.as_deref(), Some("Two got BBB"));
+    }
+
+    #[test]
+    fn claiming_an_occupied_number_warns_and_does_not_add_the_taker() {
         let mut yours = filled();
         yours.apply_heal(call("Clericone", 1, true));
         assert!(yours.warning.is_none());
 
         yours.apply_heal(call("Two", 1, false));
-        assert!(yours.warning.as_deref().unwrap().contains("your slot 001"));
-        assert!(yours.warning_urgent);
+        assert_eq!(yours.slots.get(&1).unwrap().player, "Clericone");
+        assert_eq!(yours.slots.get(&2).unwrap().player, "Two");
+        assert_eq!(yours.warning.as_deref(), Some("Two: 001 is already taken."));
+        assert!(!yours.warning_urgent);
+        assert_eq!(yours.warning_kind, WarningKind::SlotTaken);
+
+        let mut yours_take = filled();
+        yours_take.apply_heal(call("Clericone", 2, true));
+        assert_eq!(yours_take.slots.get(&2).unwrap().player, "Two");
+        assert_eq!(yours_take.slots.get(&1).unwrap().player, "Clericone");
+        assert_eq!(
+            yours_take.warning.as_deref(),
+            Some("002 is already taken.")
+        );
+        assert!(yours_take.warning_urgent);
 
         let mut others = filled();
         others.apply_heal(call("Three", 2, false));
+        assert_eq!(others.slots.get(&2).unwrap().player, "Two");
+        assert_eq!(others.slots.get(&3).unwrap().player, "Three");
         assert_eq!(
             others.warning.as_deref(),
-            Some("Three took 002 from Two.")
+            Some("Three: 002 is already taken.")
         );
         assert!(!others.warning_urgent);
     }
@@ -1504,9 +1742,9 @@ mod tests {
     #[test]
     fn next_wraps_around_and_skips_gaps() {
         let mut chain = ChainState::new(2.0, 10.0);
-        chain.apply_command(ChainCommand::Take { number: 1 }, "A".into());
-        chain.apply_command(ChainCommand::Take { number: 5 }, "B".into());
-        chain.apply_command(ChainCommand::Take { number: 9 }, "C".into());
+        chain.apply_command(ChainCommand::Take { player: None, number: 1 }, "A".into());
+        chain.apply_command(ChainCommand::Take { player: None, number: 5 }, "B".into());
+        chain.apply_command(ChainCommand::Take { player: None, number: 9 }, "C".into());
         assert_eq!(chain.next_after(5), Some(9));
         assert_eq!(chain.next_after(9), Some(1));
         chain.apply_command(ChainCommand::Skip { number: Some(1) }, "Lead".into());
@@ -1517,7 +1755,7 @@ mod tests {
     fn empty_or_all_skipped_has_no_next() {
         let mut chain = ChainState::new(2.0, 10.0);
         assert_eq!(chain.next_after(1), None);
-        chain.apply_command(ChainCommand::Take { number: 1 }, "A".into());
+        chain.apply_command(ChainCommand::Take { player: None, number: 1 }, "A".into());
         chain.apply_command(ChainCommand::Skip { number: Some(1) }, "Lead".into());
         assert_eq!(chain.next_after(1), None);
     }
@@ -1539,6 +1777,57 @@ mod tests {
         assert!(!you.is_next);
         let next = snap.slots.iter().find(|s| s.number == 3).unwrap();
         assert!(next.is_next);
+    }
+
+    #[test]
+    fn single_cleric_chain_counts_down_to_the_next_beat() {
+        let mut chain = ChainState::new(2.0, 10.0);
+        chain.set_your_name("Clericone".into());
+        chain.apply_command(
+            ChainCommand::Take {
+                player: None,
+                number: 1,
+            },
+            "Clericone".into(),
+        );
+        chain.apply_command_at(
+            ChainCommand::StartChain { tank: None },
+            "Lead".into(),
+            10_000,
+        );
+        let start = chain.snapshot_at(10_000);
+        assert!(start.running);
+        assert_eq!(start.current_number, Some(1));
+        let you = start.slots.iter().find(|s| s.number == 1).unwrap();
+        assert!(you.is_current);
+        assert!(!you.is_next);
+        assert!((you.remaining_seconds - 10.0).abs() < 0.05);
+        assert!((start.you_cast_in.unwrap() - 10.0).abs() < 0.05);
+
+        let mid = chain.snapshot_at(11_000);
+        let you = mid.slots.iter().find(|s| s.number == 1).unwrap();
+        assert!(you.is_current);
+        assert!((you.remaining_seconds - 9.0).abs() < 0.05);
+        assert!((mid.you_cast_in.unwrap() - 9.0).abs() < 0.05);
+
+        chain.apply_heal_at(call("Clericone", 1, true), 12_000);
+        let after_shout = chain.snapshot_at(14_000);
+        let you = after_shout.slots.iter().find(|s| s.number == 1).unwrap();
+        assert!((you.remaining_seconds - 8.0).abs() < 0.05);
+        assert!((after_shout.you_cast_in.unwrap() - 8.0).abs() < 0.05);
+    }
+
+    #[test]
+    fn running_chain_keeps_ch_cast_progress() {
+        let mut chain = filled();
+        chain.apply_command_at(ChainCommand::StartChain { tank: None }, "Lead".into(), 10_000);
+        chain.apply_heal_at(call("Two", 2, false), 12_000);
+        let snap = chain.snapshot_at(14_000);
+        let two = snap.slots.iter().find(|s| s.number == 2).unwrap();
+        assert_eq!(two.last_cast_ms, Some(12_000));
+        assert!((two.cast_remaining_seconds - 8.0).abs() < 0.05);
+        assert!((two.cast_progress - 0.8).abs() < 0.05);
+        assert!((two.remaining_seconds - two.cast_remaining_seconds).abs() > 0.5);
     }
 
     #[test]
@@ -1570,7 +1859,7 @@ mod tests {
     #[test]
     fn set_your_name_rewrites_you_and_previous_name() {
         let mut chain = ChainState::new(2.0, 10.0);
-        chain.apply_command(ChainCommand::Take { number: 1 }, "You".into());
+        chain.apply_command(ChainCommand::Take { player: None, number: 1 }, "You".into());
         chain.set_your_name("Clericone".into());
         assert_eq!(chain.slots.get(&1).unwrap().player, "Clericone");
         chain.set_your_name("Clericone".into());
@@ -1627,7 +1916,11 @@ mod tests {
         assert!(start.running);
         assert_eq!(start.current_number, Some(1));
         assert_eq!(start.next_number, Some(2));
-        assert_eq!(start.you_cast_in, Some(0.0));
+        let you_now = start.you_cast_in.expect("you next cycle");
+        assert!((you_now - 5.9).abs() < 0.15);
+        let current = start.slots.iter().find(|s| s.number == 1).unwrap();
+        assert!((current.remaining_seconds - 5.9).abs() < 0.15);
+        assert!((current.progress - (5.9 / 6.0)).abs() < 0.05);
 
         let second = chain.snapshot_at(12_100);
         assert_eq!(second.current_number, Some(2));
@@ -1660,17 +1953,17 @@ mod tests {
         let mut chain = filled();
         chain.apply_command_at(ChainCommand::StartChain { tank: None }, "Lead".into(), 10_000);
         chain.apply_heal_at(call("Two", 2, false), 12_250);
+        let snap = chain.snapshot_at(12_250);
+        let two = snap.slots.iter().find(|s| s.number == 2).unwrap();
+        assert!((two.offset_seconds.unwrap() - 0.25).abs() < 0.05);
         let offset = chain.slots.get(&2).unwrap().last_offset_seconds.unwrap();
         assert!((offset - 0.25).abs() < 0.05);
 
-        chain.apply_you_cast_at(10_400);
+        chain.apply_heal_at(call("Clericone", 1, true), 10_400);
         let you = chain.slots.get(&1).unwrap().last_offset_seconds.unwrap();
         assert!((you - 0.4).abs() < 0.05);
-        chain.apply_heal_at(call("Clericone", 1, true), 10_900);
-        let you_after_shout = chain.slots.get(&1).unwrap().last_offset_seconds.unwrap();
-        assert!((you_after_shout - 0.4).abs() < 0.05);
-        let snap = chain.snapshot_at(10_400);
-        assert!((snap.you_last_offset.unwrap() - 0.4).abs() < 0.05);
+        let you_snap = chain.snapshot_at(10_400);
+        assert!((you_snap.you_last_offset.unwrap() - 0.4).abs() < 0.05);
     }
 
     #[test]
@@ -1743,7 +2036,7 @@ mod tests {
             },
             "Lead".into(),
         );
-        chain.apply_command(ChainCommand::Take { number: 3 }, "You".into());
+        chain.apply_command(ChainCommand::Take { player: None, number: 4 }, "You".into());
         let snap = chain.snapshot_at(1_000);
         assert_eq!(snap.your_tank.as_deref(), Some("Beefwich"));
         assert!(snap.slots.iter().all(|slot| slot.number >= 3));
@@ -1757,6 +2050,7 @@ mod tests {
         chain.apply_command(ChainCommand::OffTank { tank: "Beefwich".into() }, "Lead".into());
         chain.apply_command(ChainCommand::Split { number: 3 }, "Lead".into());
         chain.apply_heal(call("Three", 3, false));
+        chain.apply_command(ChainCommand::StartChain { tank: None }, "Lead".into());
         chain.apply_heal(CompleteHealCall {
             speaker: "Clericone".into(),
             is_you: true,
@@ -1770,6 +2064,127 @@ mod tests {
             .as_deref()
             .unwrap()
             .contains("001 is on Mluian"));
+        assert!(chain.warning_urgent);
+        assert_eq!(chain.warning_kind, WarningKind::WrongTarget);
+        assert_eq!(chain.slots.get(&1).unwrap().player, "Clericone");
+    }
+
+    #[test]
+    fn shouting_a_target_that_is_not_the_set_tank_warns() {
+        let mut chain = filled();
+        chain.apply_command(ChainCommand::MainTank { tank: "Mluian".into() }, "Lead".into());
+        chain.apply_command(ChainCommand::StartChain { tank: None }, "Lead".into());
+        chain.apply_heal(CompleteHealCall {
+            speaker: "Clericone".into(),
+            is_you: true,
+            number: 1,
+            target: "a goblin".into(),
+            tag: Some("GG".into()),
+            raw: "GG 001 CH -- a goblin".into(),
+        });
+        assert!(chain
+            .warning
+            .as_deref()
+            .unwrap()
+            .contains("macro is for a goblin"));
+        assert!(chain.warning_urgent);
+        assert_eq!(chain.warning_kind, WarningKind::WrongTarget);
+        chain.apply_heal(call("Clericone", 1, true));
+        assert_eq!(chain.warning, None);
+    }
+
+    #[test]
+    fn other_clerics_wrong_target_warns_without_urgency() {
+        let mut chain = filled();
+        chain.apply_command(ChainCommand::MainTank { tank: "Mluian".into() }, "Lead".into());
+        chain.apply_command(ChainCommand::StartChain { tank: None }, "Lead".into());
+        chain.apply_heal(CompleteHealCall {
+            speaker: "Two".into(),
+            is_you: false,
+            number: 2,
+            target: "an orc".into(),
+            tag: Some("GG".into()),
+            raw: "GG 002 CH -- an orc".into(),
+        });
+        assert!(chain
+            .warning
+            .as_deref()
+            .unwrap()
+            .contains("macro is for an orc"));
+        assert!(!chain.warning_urgent);
+        assert_eq!(chain.warning_kind, WarningKind::WrongTarget);
+        assert_eq!(chain.slots.get(&2).unwrap().player, "Two");
+    }
+
+    #[test]
+    fn wrong_target_does_not_warn_before_the_chain_starts() {
+        let mut chain = filled();
+        chain.apply_command(ChainCommand::MainTank { tank: "Mluian".into() }, "Lead".into());
+        chain.apply_heal(CompleteHealCall {
+            speaker: "Clericone".into(),
+            is_you: true,
+            number: 1,
+            target: "a goblin".into(),
+            tag: Some("GG".into()),
+            raw: "GG 001 CH -- a goblin".into(),
+        });
+        assert_eq!(chain.warning, None);
+        assert_eq!(chain.slots.get(&1).unwrap().player, "Clericone");
+    }
+
+    #[test]
+    fn first_join_wrong_target_does_not_warn() {
+        let mut chain = ChainState::new(2.0, 10.0);
+        chain.set_your_name("Clericone".into());
+        chain.apply_command(ChainCommand::MainTank { tank: "Mluian".into() }, "Lead".into());
+        chain.apply_heal(CompleteHealCall {
+            speaker: "Clericone".into(),
+            is_you: true,
+            number: 1,
+            target: "a goblin".into(),
+            tag: Some("GG".into()),
+            raw: "GG 001 CH -- a goblin".into(),
+        });
+        assert_eq!(chain.warning, None);
+        assert_eq!(chain.slots.get(&1).unwrap().player, "Clericone");
+    }
+
+    #[test]
+    fn no_warning_when_tank_is_not_set() {
+        let mut chain = filled();
+        chain.apply_heal(CompleteHealCall {
+            speaker: "Clericone".into(),
+            is_you: true,
+            number: 1,
+            target: "a goblin".into(),
+            tag: Some("GG".into()),
+            raw: "GG 001 CH -- a goblin".into(),
+        });
+        assert_eq!(chain.warning, None);
+    }
+
+    #[test]
+    fn rampage_wrong_target_warns() {
+        let mut chain = ChainState::new_rampage(2.0, 10.0);
+        chain.set_your_name("Clericone".into());
+        chain.apply_command(ChainCommand::MainTank { tank: "Mluian".into() }, "Lead".into());
+        chain.apply_heal(call("Clericone", 1, true));
+        chain.apply_command(ChainCommand::StartChain { tank: None }, "Lead".into());
+        chain.apply_heal(CompleteHealCall {
+            speaker: "Clericone".into(),
+            is_you: true,
+            number: 1,
+            target: "Beefwich".into(),
+            tag: Some("GG".into()),
+            raw: "GG AAA RCH -- Beefwich".into(),
+        });
+        assert!(chain
+            .warning
+            .as_deref()
+            .unwrap()
+            .contains("AAA is on Mluian"));
+        assert!(chain.warning_urgent);
+        assert_eq!(chain.warning_kind, WarningKind::WrongTarget);
     }
 
     #[test]
@@ -1778,14 +2193,16 @@ mod tests {
         chain.set_your_name("Clericone".into());
         chain.apply_heal(call("Clericone", 1, true));
         chain.apply_heal(call("Two", 1, false));
+        assert_eq!(chain.slots.get(&1).unwrap().player, "Clericone");
         assert!(chain
             .warning
             .as_deref()
             .unwrap()
-            .contains("your slot AAA"));
+            .contains("AAA is already taken"));
         let snap = chain.snapshot_at(1_000);
         assert_eq!(snap.slot_format, SlotFormat::Letter);
         assert_eq!(snap.slots[0].number, 1);
+        assert_eq!(snap.warning_kind, WarningKind::SlotTaken);
     }
 
     #[test]
@@ -1796,7 +2213,7 @@ mod tests {
         chain.apply_heal_at(call("Three", 3, false), 12_100);
         assert!(chain.running);
         assert!((chain.interval_seconds - 2.0).abs() < 0.01);
-        chain.apply_command_at(ChainCommand::Take { number: 4 }, "You".into(), 12_400);
+        chain.apply_command_at(ChainCommand::Take { player: None, number: 4 }, "You".into(), 12_400);
         let snap = chain.snapshot_at(12_400);
         assert_eq!(snap.current_number, Some(3));
         assert_eq!(snap.next_number, Some(4));
@@ -1817,7 +2234,7 @@ mod tests {
         let mut chain = filled();
         chain.apply_command_at(ChainCommand::StartChain { tank: None }, "Lead".into(), 10_000);
         assert_eq!(chain.snapshot_at(12_100).current_number, Some(2));
-        chain.apply_command_at(ChainCommand::Take { number: 9 }, "Four".into(), 12_100);
+        chain.apply_command_at(ChainCommand::Take { player: None, number: 9 }, "Four".into(), 12_100);
         let snap = chain.snapshot_at(12_100);
         assert_eq!(snap.current_number, Some(2));
         assert_eq!(snap.next_number, Some(3));
@@ -1843,7 +2260,7 @@ mod tests {
         chain.apply_command(ChainCommand::Split { number: 9 }, "Lead".into());
         chain.apply_heal_at(call("A", 1, false), 10_000);
         chain.apply_heal_at(call("B", 2, false), 12_000);
-        chain.apply_command_at(ChainCommand::Take { number: 9 }, "You".into(), 12_500);
+        chain.apply_command_at(ChainCommand::Take { player: None, number: 9 }, "You".into(), 12_500);
         assert!(chain.running);
         assert!(!chain
             .tanks

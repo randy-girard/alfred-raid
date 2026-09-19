@@ -33,6 +33,8 @@
         </nav>
       </header>
 
+      <div id="alerts" class="alerts" hidden></div>
+
       <section id="view-chain" class="view" data-view="chain">
         <div class="meta">
           <div>
@@ -57,7 +59,6 @@
           Cast in <span id="you-eta">0.0</span>s
           <span id="you-offset"></span>
         </div>
-        <div id="warning" class="banner warn" hidden></div>
 
         <div id="slots" class="slots"></div>
         <div id="empty" class="empty">
@@ -91,23 +92,25 @@
           Cast in <span id="r-you-eta">0.0</span>s
           <span id="r-you-offset"></span>
         </div>
-        <div id="r-warning" class="banner warn" hidden></div>
 
         <div id="r-slots" class="slots"></div>
         <div id="r-empty" class="empty">
           Waiting for a rampage chain.<br />
           Use <code>RCH</code> with <code>AAA</code>, <code>BBB</code>, <code>CCC</code>. Start with
-          <code>!rstartchain</code>.
+          <code>!startchain</code>.
         </div>
       </section>
 
       <section id="view-commands" class="view" data-view="commands" hidden>
         <p class="commands-lead">
-          Shout, OOC, group, guild, raid, or auction — not say. CH uses numbers
+          CH uses numbers
           (<code>GG 001 CH -- Tank</code>). Rampage uses <code>RCH</code> and letters
-          (<code>GG AAA RCH -- Tank</code>). <code>!take 001</code> and <code>!skip 001</code> go to
-          CH; <code>!take AAA</code> and <code>!skip AAA</code> go to rampage. Bare
+          (<code>GG AAA RCH -- Tank</code>). <code>!take</code> takes the next free CH number.
+          <code>!take 001</code> and <code>!skip 001</code> go to
+          CH; <code>!take AAA</code> and <code>!skip AAA</code> go to rampage. Add a name to place
+          someone else: <code>!take 001 Portlia</code> or <code>!take Portlia</code>. Bare
           <code>!skip</code> / <code>!back</code> apply to every chain you are on.
+          <code>!startchain</code> and <code>!stopchain</code> start and stop CH and rampage together.
         </p>
         <h2 class="commands-heading">CH chain</h2>
         <div id="command-list" class="commands"></div>
@@ -130,12 +133,40 @@
           <span>Keep window on top</span>
         </label>
 
+        <label class="field">
+          <span>Guild tag</span>
+          <input id="chain-tag" type="text" maxlength="4" placeholder="GG" spellcheck="false" autocomplete="off" />
+          <small>Only CH and RCH macros that start with this tag are used. Default GG. Other tags such as CA, ST, or SS are ignored.</small>
+        </label>
+
+        <fieldset class="radios">
+          <legend>Alerts</legend>
+          <label class="check">
+            <input id="alert-slot-taken" type="checkbox" />
+            <span>Warn when a number is already taken</span>
+          </label>
+          <label class="check">
+            <input id="alert-wrong-target" type="checkbox" />
+            <span>Warn when a CH target is not the tank</span>
+          </label>
+          <label class="check">
+            <input id="alert-auto-take-sound" type="checkbox" />
+            <span>Speak the number when !take assigns the next slot</span>
+          </label>
+        </fieldset>
+
         <fieldset class="radios">
           <legend>Audio cue</legend>
-          <label class="check">
-            <input id="sound-enabled" type="radio" name="alert-mode" value="sound" />
-            <span>Play a sound when I am next</span>
-          </label>
+          <div class="cue-option">
+            <label class="check">
+              <input id="sound-enabled" type="radio" name="alert-mode" value="sound" />
+              <span>Play a sound when I am next</span>
+            </label>
+            <label class="field cue-lead">
+              <span>Lead-in (s)</span>
+              <input id="sound-lead" type="number" min="0" step="0.5" />
+            </label>
+          </div>
           <label class="check">
             <input id="metronome-enabled" type="radio" name="alert-mode" value="metronome" />
             <span>Metronome voice (speak each chain number)</span>
@@ -146,11 +177,7 @@
           </label>
         </fieldset>
 
-        <div class="grid three">
-          <label class="field">
-            <span>Sound lead-in (s)</span>
-            <input id="sound-lead" type="number" min="0" step="0.5" />
-          </label>
+        <div class="grid">
           <label class="field">
             <span>Interval (s)</span>
             <input id="interval-seconds" type="number" min="0.1" step="0.1" />
@@ -162,6 +189,8 @@
         </div>
 
         <p id="save-status" class="save-status"></p>
+
+        <button id="open-tester" type="button">Open test log</button>
 
         <dl class="facts">
           <div>
@@ -187,6 +216,58 @@
         <span id="watch-dot" class="dot"></span>
         <span id="watch-status">No EverQuest directory set</span>
       </footer>
+    </div>
+
+    <div id="setup" class="setup" hidden>
+      <div class="setup-card">
+        <p id="setup-step" class="setup-step">Step 1 of 1</p>
+        <section id="setup-eq" hidden>
+          <h2>Find EverQuest</h2>
+          <p>
+            Alfred looks in common EQ, Steam, Wine, and CrossOver folders. It could not
+            find yours. Paste the path or browse to the folder that contains
+            <code>Logs</code>.
+          </p>
+          <label class="field">
+            <span>EverQuest directory</span>
+            <div class="row">
+              <input id="setup-eq-directory" type="text" placeholder="Paste or browse to your EQ folder…" />
+              <button id="setup-browse-eq" type="button">Browse</button>
+            </div>
+            <small id="setup-eq-status"></small>
+          </label>
+          <div class="setup-actions">
+            <button id="setup-eq-next" class="primary" type="button" disabled>Continue</button>
+          </div>
+        </section>
+        <section id="setup-audio" hidden>
+          <h2>Audio cues</h2>
+          <p>
+            How should Alfred alert you when it is your turn? You can change this later in
+            Settings.
+          </p>
+          <fieldset class="radios">
+            <legend>Audio cue</legend>
+            <label class="check">
+              <input id="setup-sound" type="radio" name="setup-alert-mode" value="sound" checked />
+              <span>Play a sound when I am next</span>
+            </label>
+            <label class="check">
+              <input id="setup-metronome" type="radio" name="setup-alert-mode" value="metronome" />
+              <span>Metronome voice (speak each chain number)</span>
+            </label>
+            <label class="check">
+              <input id="setup-audio-none" type="radio" name="setup-alert-mode" value="none" />
+              <span>None</span>
+            </label>
+          </fieldset>
+          <div class="setup-actions">
+            <button id="setup-audio-back" type="button" hidden>Back</button>
+            <button id="setup-audio-done" class="primary" type="button">Start using Alfred</button>
+          </div>
+        </section>
+        <p id="setup-error" class="save-status"></p>
+      </div>
     </div>
   </body>
 </html>

@@ -6,15 +6,21 @@ mod parser;
 
 use chain::{ChainSnapshot, ChainState};
 use serde::Serialize;
-use config::AppConfig;
+use config::{geometry_on_a_monitor, AppConfig, Rect, WindowGeometry};
 use engine::apply_lines;
 use log_watcher::{spawn_watcher, EqDirectoryProbe, WatchEvent, WatchStatus, WatcherHandle};
-use parser::Parser;
+use parser::{format_test_log_line, Parser, TestChannel};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::thread;
+use std::time::{Duration, Instant};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{
+    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Position, Size, State, WebviewUrl,
+    WebviewWindow, WebviewWindowBuilder,
+};
 
 struct AppState {
     config: Mutex<AppConfig>,
@@ -23,6 +29,21 @@ struct AppState {
     parser: Mutex<Parser>,
     status: Mutex<WatchStatus>,
     watcher: Mutex<Option<WatcherHandle>>,
+    window_persist: WindowPersist,
+}
+
+struct WindowPersist {
+    last_change: Mutex<Instant>,
+    running: AtomicBool,
+}
+
+impl Default for WindowPersist {
+    fn default() -> Self {
+        Self {
+            last_change: Mutex::new(Instant::now()),
+            running: AtomicBool::new(false),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -41,7 +62,7 @@ impl AppState {
                 let _ = config.save();
             }
         }
-        let parser = Parser::new();
+        let parser = Parser::with_chain_tag(&config.chain_tag);
         let chain = ChainState::new(config.interval_seconds, config.cast_time_seconds);
         let rampage = ChainState::new_rampage(config.interval_seconds, config.cast_time_seconds);
         Self {
@@ -51,6 +72,7 @@ impl AppState {
             parser: Mutex::new(parser),
             status: Mutex::new(WatchStatus::idle(None)),
             watcher: Mutex::new(None),
+            window_persist: WindowPersist::default(),
         }
     }
 }
@@ -140,6 +162,23 @@ fn save_settings(state: State<AppState>, app: AppHandle, patch: SettingsPatch) -
         config.tail_poll_ms = v.max(50);
         restart_watch = true;
     }
+    if let Some(v) = patch.setup_complete {
+        config.setup_complete = v;
+    }
+    if let Some(tag) = patch.chain_tag {
+        let tag = config::normalize_chain_tag(&tag);
+        config.chain_tag = tag.clone();
+        state.parser.lock().map_err(|e| e.to_string())?.set_chain_tag(&tag);
+    }
+    if let Some(v) = patch.alert_slot_taken {
+        config.alert_slot_taken = v;
+    }
+    if let Some(v) = patch.alert_wrong_target {
+        config.alert_wrong_target = v;
+    }
+    if let Some(v) = patch.alert_auto_take_sound {
+        config.alert_auto_take_sound = v;
+    }
 
     config.save().map_err(|e| e.to_string())?;
     let cloned = config.clone();
@@ -150,6 +189,68 @@ fn save_settings(state: State<AppState>, app: AppHandle, patch: SettingsPatch) -
     }
     let _ = app.emit("config-updated", &cloned);
     Ok(cloned)
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InjectResult {
+    line: String,
+    changed: bool,
+}
+
+#[tauri::command]
+fn inject_test_line(
+    state: State<AppState>,
+    app: AppHandle,
+    speaker: String,
+    channel: TestChannel,
+    message: String,
+) -> Result<InjectResult, String> {
+    let line = format_test_log_line(&speaker, channel, &message)?;
+    let character = state
+        .status
+        .lock()
+        .map_err(|e| e.to_string())?
+        .character
+        .clone();
+    let parser = state.parser.lock().map_err(|e| e.to_string())?;
+    let mut chain = state.chain.lock().map_err(|e| e.to_string())?;
+    let mut rampage = state.rampage.lock().map_err(|e| e.to_string())?;
+    let changed = apply_lines(
+        &parser,
+        &mut chain,
+        &mut rampage,
+        character.as_deref(),
+        std::slice::from_ref(&line),
+    );
+    let snap = RaidSnapshot {
+        chain: chain.snapshot(),
+        rampage: rampage.snapshot(),
+    };
+    drop(parser);
+    drop(chain);
+    drop(rampage);
+    let _ = app.emit("raid-updated", &snap);
+    Ok(InjectResult { line, changed })
+}
+
+#[tauri::command]
+async fn open_tester(app: AppHandle) -> Result<(), String> {
+    if let Some(existing) = app.get_webview_window("tester") {
+        let _ = existing.show();
+        let _ = existing.unminimize();
+        let _ = existing.set_focus();
+        return Ok(());
+    }
+    WebviewWindowBuilder::new(&app, "tester", WebviewUrl::App("tester.html".into()))
+        .title("Alfred — Test log")
+        .inner_size(440.0, 400.0)
+        .min_inner_size(360.0, 320.0)
+        .resizable(true)
+        .always_on_top(true)
+        .build()
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -163,6 +264,11 @@ struct SettingsPatch {
     interval_seconds: Option<f64>,
     cast_time_seconds: Option<f64>,
     tail_poll_ms: Option<u64>,
+    setup_complete: Option<bool>,
+    chain_tag: Option<String>,
+    alert_slot_taken: Option<bool>,
+    alert_wrong_target: Option<bool>,
+    alert_auto_take_sound: Option<bool>,
 }
 
 fn start_watcher(app: &AppHandle, state: &AppState) -> Result<(), String> {
@@ -265,6 +371,117 @@ fn show_main_window(app: &AppHandle) {
     }
 }
 
+fn monitor_rects(window: &WebviewWindow) -> Vec<Rect> {
+    window
+        .available_monitors()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|monitor| {
+            let pos = monitor.position();
+            let size = monitor.size();
+            Rect {
+                x: pos.x,
+                y: pos.y,
+                w: size.width as i32,
+                h: size.height as i32,
+            }
+        })
+        .collect()
+}
+
+fn current_window_geometry(window: &WebviewWindow) -> Option<WindowGeometry> {
+    if window.is_minimized().unwrap_or(false) || window.is_maximized().unwrap_or(false) {
+        return None;
+    }
+    let scale = window.scale_factor().ok()?;
+    let pos = window.outer_position().ok()?.to_logical::<f64>(scale);
+    let size = window.outer_size().ok()?.to_logical::<f64>(scale);
+    let width = config::clamp_window_width(size.width)?;
+    let height = config::clamp_window_height(size.height)?;
+    Some(WindowGeometry {
+        x: pos.x,
+        y: pos.y,
+        width,
+        height,
+    })
+}
+
+fn persist_window_geometry(window: &WebviewWindow) {
+    let Some(geom) = current_window_geometry(window) else {
+        return;
+    };
+    let Some(state) = window.try_state::<AppState>() else {
+        return;
+    };
+    let Ok(mut config) = state.config.lock() else {
+        return;
+    };
+    if config.window_geometry() == Some(geom) {
+        return;
+    }
+    config.set_window_geometry(geom);
+    let _ = config.save();
+}
+
+fn schedule_window_save(window: &WebviewWindow) {
+    let Some(state) = window.try_state::<AppState>() else {
+        return;
+    };
+    if let Ok(mut last) = state.window_persist.last_change.lock() {
+        *last = Instant::now();
+    }
+    if state.window_persist.running.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let window = window.clone();
+    thread::spawn(move || loop {
+        thread::sleep(Duration::from_millis(300));
+        let Some(state) = window.try_state::<AppState>() else {
+            break;
+        };
+        let elapsed = state
+            .window_persist
+            .last_change
+            .lock()
+            .ok()
+            .map(|when| when.elapsed())
+            .unwrap_or(Duration::from_secs(1));
+        if elapsed >= Duration::from_millis(300) {
+            persist_window_geometry(&window);
+            state
+                .window_persist
+                .running
+                .store(false, Ordering::SeqCst);
+            break;
+        }
+    });
+}
+
+fn apply_saved_window(window: &WebviewWindow, state: &AppState) {
+    let Ok(config) = state.config.lock() else {
+        return;
+    };
+    let Some(geom) = config.window_geometry() else {
+        return;
+    };
+    drop(config);
+    let _ = window.set_size(Size::Logical(LogicalSize {
+        width: geom.width,
+        height: geom.height,
+    }));
+    let scale = window.scale_factor().unwrap_or(1.0);
+    if geometry_on_a_monitor(geom, scale, &monitor_rects(window)) {
+        let _ = window.set_position(Position::Logical(LogicalPosition {
+            x: geom.x,
+            y: geom.y,
+        }));
+    }
+}
+
+fn main_window(window: &tauri::Window) -> Option<WebviewWindow> {
+    window.app_handle().get_webview_window(window.label())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -277,7 +494,9 @@ pub fn run() {
             get_snapshot,
             get_watch_status,
             inspect_eq_directory,
-            save_settings
+            save_settings,
+            inject_test_line,
+            open_tester
         ])
         .setup(|app| {
             let show = MenuItem::with_id(app, "show", "Show Alfred", true, None::<&str>)?;
@@ -285,10 +504,13 @@ pub fn run() {
             let rampage = MenuItem::with_id(app, "rampage", "Rampage Chain", true, None::<&str>)?;
             let commands = MenuItem::with_id(app, "commands", "Commands", true, None::<&str>)?;
             let settings = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
+            let tester = MenuItem::with_id(app, "tester", "Test log", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(
                 app,
-                &[&show, &chain, &rampage, &commands, &settings, &quit],
+                &[
+                    &show, &chain, &rampage, &commands, &settings, &tester, &quit,
+                ],
             )?;
 
             let icon = app
@@ -320,6 +542,12 @@ pub fn run() {
                         show_main_window(app);
                         let _ = app.emit("open-view", "settings");
                     }
+                    "tester" => {
+                        let handle = app.clone();
+                        tauri::async_runtime::spawn(async move {
+                            let _ = open_tester(handle).await;
+                        });
+                    }
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
@@ -340,6 +568,8 @@ pub fn run() {
                 let always_on_top = state.config.lock().map(|c| c.always_on_top).unwrap_or(false);
                 if let Some(window) = handle.get_webview_window("main") {
                     let _ = window.set_always_on_top(always_on_top);
+                    apply_saved_window(&window, state.inner());
+                    let _ = window.show();
                 }
                 start_watcher(handle, state.inner())?;
             }
@@ -347,11 +577,36 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
-                let _ = window.hide();
+            match event {
+                tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_) => {
+                    if window.label() != "main" {
+                        return;
+                    }
+                    if let Some(main) = main_window(window) {
+                        schedule_window_save(&main);
+                    }
+                }
+                tauri::WindowEvent::CloseRequested { api, .. } => {
+                    api.prevent_close();
+                    if window.label() == "main" {
+                        if let Some(main) = main_window(window) {
+                            persist_window_geometry(&main);
+                            let _ = main.hide();
+                        }
+                    } else {
+                        let _ = window.hide();
+                    }
+                }
+                _ => {}
             }
         })
-        .run(tauri::generate_context!())
-        .expect("error while running Alfred");
+        .build(tauri::generate_context!())
+        .expect("error while starting Alfred")
+        .run(|app, event| {
+            if let tauri::RunEvent::ExitRequested { .. } = event {
+                if let Some(window) = app.get_webview_window("main") {
+                    persist_window_geometry(&window);
+                }
+            }
+        });
 }
