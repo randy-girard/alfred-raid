@@ -84,7 +84,7 @@ You shout, 'GG RCH AAA -- Beefwich'
 | `!rt <tank>` | Set the rampage tank. One tank only; no off tank or split |
 | `!rchain 2 [tank]` | Set the rampage interval |
 
-`!take`, `!skip`, `!back`, and `!move` are shared: numbers go to CH, letters go to rampage. `!startchain` / `!stopchain` start and stop both panels. CH macros never fill the rampage panel and RCH macros never fill CH.
+`!take`, `!skip`, `!back`, and `!move` are shared: numbers go to CH, letters go to rampage. `!startchain` / `!stopchain` arm and stop both panels. CH macros never fill the rampage panel and RCH macros never fill CH.
 
 Sound, metronome, and claim alerts follow whichever tab is visible so the two clocks do not talk over each other.
 
@@ -92,7 +92,7 @@ Sound, metronome, and claim alerts follow whichever tab is visible so the two cl
 
 | Command | Effect |
 | --- | --- |
-| `!startchain [tank]` | Start CH and rampage (`!start`, `!start chain`, `!start-chain`). Name a tank to start only that tank |
+| `!startchain [tank]` | Arm CH and rampage. The clock starts on the first CH or RCH from that cleric (`!start`, `!start chain`, `!start-chain`). Name a tank to arm only that tank |
 | `!stopchain [tank]` | Stop CH and rampage; slots stay (`!stop`, `!stop chain`, `!stop-chain`) |
 | `!mt <tank>` | Set the main tank (owns numbers not in another range) |
 | `!ot <tank>` | Set the off tank for a two-tank split |
@@ -106,7 +106,7 @@ Sound, metronome, and claim alerts follow whichever tab is visible so the two cl
 | `!move 001 002` | Swap two CH numbers, or `!move AAA BBB` for rampage |
 | `!chain 2 [tank]` | Set the interval to 2 seconds, or that tank only |
 
-`!startchain` can be used mid-fight; Alfred re-anchors the clock to that moment and keeps using the live skip/take list.
+`!startchain` arms the chain. The clock does not run until the first CH or RCH after that, and it starts from whoever went. Mid-fight `!startchain` waits for the next shout the same way.
 
 If you join late and missed `!startchain`, Alfred watches CH/RCH shouts on the tank you took, infers the interval from those gaps (rounded to the nearest second), and starts **your local clock** so the latest shouter is current and you sit in the right place in that chain. Everyone else already has you from `!take` / your macro; this only syncs your app.
 
@@ -127,7 +127,7 @@ Numbers 001–008 are Mluian; 009+ are Beefwich. Or assign ranges with `!tank Be
 
 The **Commands** tab (and the tray **Commands** item) lists these in the app.
 
-Each card shows a **Next** bar until that cleric should CH again. While the chain is running, **Next** is at the top and the cleric whose beat just passed drops to the bottom with a refilled bar for their next turn. **Last hit** is late/early/on time, and a **CH** bar runs while their Complete Heal is in the air. A solo chain uses CH cast time for the Next countdown so you still see when to recast. Timing uses CH and RCH macros, not begin-cast lines.
+Each card shows a **Next** bar until that cleric should CH again. While the chain is running, **Next** is at the top and the cleric whose beat just passed drops to the bottom with a refilled bar for their next turn. The **Cast in** banner has the same countdown as a bar, so you can watch one place; it updates if clerics join or leave. **Last hit** is late/early/on time, and a **CH** bar runs while their Complete Heal is in the air. A solo chain uses CH cast time for the Next countdown so you still see when to recast. `!startchain` waits for your first CH, then that bar counts down from the shout. Timing uses CH and RCH macros, not begin-cast lines.
 
 If someone claims a number that is already taken, Alfred leaves the occupant in place and shows a warning to the person who tried to take it. That person is not added to the chain.
 
