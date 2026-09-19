@@ -90,6 +90,7 @@ pub struct Parser {
 }
 
 impl Parser {
+    #[cfg(test)]
     pub fn new() -> Self {
         Self::with_chain_tag("GG")
     }

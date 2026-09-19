@@ -805,6 +805,7 @@ impl ChainState {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn next_after(&self, current: u32) -> Option<u32> {
         self.next_after_in(&self.tank_key_for(current), current)
     }
