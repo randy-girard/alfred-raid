@@ -57,6 +57,7 @@ import {
   demoScenarioLabel,
   clampDemoOptions,
   fastestInterval,
+  clockIsIdle,
   chainRail,
   primaryChain,
   sideChains,
@@ -760,6 +761,25 @@ describe("other tanks alongside your chain", () => {
     expect(primaryChain(null, null).kind).toBe("chain");
   });
 
+  it("swaps the big list when the side chain is pinned", () => {
+    const ch = liveSnapshot(
+      snap({ slots: [slot({ number: 2, player: "Two", isYou: false })] }),
+      3_000,
+    )!;
+    const yourRampage = liveSnapshot(
+      snap({
+        slotFormat: "letter",
+        tank: "Grendel",
+        slots: [slot({ number: 1, isYou: true, tank: "Grendel" })],
+      }),
+      3_000,
+    )!;
+    expect(primaryChain(ch, yourRampage).kind).toBe("rampage");
+    expect(primaryChain(ch, yourRampage, "chain").kind).toBe("chain");
+    expect(primaryChain(ch, yourRampage, "rampage").kind).toBe("rampage");
+    expect(sideChainsHtml(chainRail(yourRampage, ch))).toContain('data-kind="chain"');
+  });
+
   it("keeps the overlay on your rotation alone", () => {
     const live = liveSnapshot(split(), 3_000)!;
     const html = overlayPanelHtml(live, "CH");
@@ -1076,6 +1096,38 @@ describe("liveSnapshot", () => {
     expect(justWent.isCurrent).toBe(true);
     expect(justWent.remainingSeconds).toBeCloseTo(5.9, 5);
     expect(justWent.progress).toBeCloseTo(5.9 / 6, 5);
+  });
+
+  it("stops showing a running clock after the shouts go quiet", () => {
+    const live = liveSnapshot(
+      snap({
+        running: true,
+        shoutSync: true,
+        heardStart: false,
+        startedAtMs: 10_000,
+        intervalSeconds: 2,
+        slots: [
+          slot({ number: 1, isYou: true, lastShoutMs: 10_000, lastCastMs: 10_000 }),
+          slot({ number: 2, player: "Two", isYou: false, lastShoutMs: 12_000, lastCastMs: 12_000 }),
+        ],
+      }),
+      20_000,
+    )!;
+    expect(clockIsIdle(
+      snap({
+        running: true,
+        shoutSync: true,
+        heardStart: false,
+        startedAtMs: 10_000,
+        intervalSeconds: 2,
+        slots: [
+          slot({ number: 1, isYou: true, lastShoutMs: 10_000, lastCastMs: 10_000 }),
+          slot({ number: 2, player: "Two", isYou: false, lastShoutMs: 12_000, lastCastMs: 12_000 }),
+        ],
+      }),
+      20_000,
+    )).toBe(true);
+    expect(live.running).toBe(false);
   });
 
   it("puts the next in line first when the chain is stopped", () => {

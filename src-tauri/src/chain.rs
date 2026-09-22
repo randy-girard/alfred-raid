@@ -196,6 +196,8 @@ pub struct TankSnapshot {
     pub beat_tick: Option<u64>,
     pub is_you: bool,
     pub armed: bool,
+    pub shout_sync: bool,
+    pub heard_start: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -224,6 +226,8 @@ pub struct ChainSnapshot {
     pub slots: Vec<SlotSnapshot>,
     pub slot_format: SlotFormat,
     pub now_ms: u64,
+    pub shout_sync: bool,
+    pub heard_start: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -320,7 +324,7 @@ impl ChainState {
     }
 
     pub fn apply_heal_at(&mut self, call: CompleteHealCall, now: u64) {
-        self.clear_stale_warning_at(now);
+        self.finish_idle_at(now);
         let player = call.speaker;
         let is_you = call.is_you || self.is_you(&player);
         if self.occupied_by_other(call.number, &player) {
@@ -570,7 +574,7 @@ impl ChainState {
         speaker: String,
         now: u64,
     ) -> Option<String> {
-        self.clear_stale_warning_at(now);
+        self.finish_idle_at(now);
         match cmd {
             ChainCommand::MainTank { tank } => {
                 self.tank = Some(tank);
@@ -880,6 +884,72 @@ impl ChainState {
         vacated
     }
 
+    /// True when this speaker already holds a seat on this chain.
+    pub fn has_player(&self, speaker: &str) -> bool {
+        self.slot_number_for_player(speaker).is_some()
+    }
+
+    /// A cleric who took a seat here but has gone quiet, then started casting
+    /// on the other chain, has moved. Sit-down macros a moment apart still
+    /// count as being on both.
+    pub fn should_yield_player(&self, speaker: &str, now: u64) -> bool {
+        if !self.has_player(speaker) {
+            return false;
+        }
+        match self
+            .slots
+            .values()
+            .find(|slot| self.same_player(&slot.player, speaker))
+            .and_then(|slot| slot.last_shout_ms)
+        {
+            None => true,
+            Some(at) => now.saturating_sub(at) >= 5_000,
+        }
+    }
+
+    /// Pull a cleric off this chain after they took a seat on the other one.
+    pub fn drop_player_at(&mut self, speaker: &str, now: u64) -> bool {
+        let numbers: Vec<u32> = self
+            .slots
+            .iter()
+            .filter(|(_, slot)| self.same_player(&slot.player, speaker))
+            .map(|(number, _)| *number)
+            .collect();
+        if numbers.is_empty() {
+            return false;
+        }
+        let mut keys = Vec::new();
+        for number in &numbers {
+            let key = self.tank_key_for(*number);
+            if !keys.contains(&key) {
+                keys.push(key);
+            }
+        }
+        let prev: Vec<(TankKey, Option<u32>, bool)> = keys
+            .iter()
+            .map(|key| {
+                (
+                    key.clone(),
+                    self.running_current(key, now),
+                    self.clock_running(key),
+                )
+            })
+            .collect();
+        // 0 is never a real slot, so every seat this cleric held is released.
+        self.vacate_player(speaker, 0);
+        for (key, current, was_running) in prev {
+            if !was_running {
+                continue;
+            }
+            if self.rotation_for(&key).is_empty() {
+                self.stop_idle_clock(key, now);
+            } else {
+                self.preserve_beat(key, now, current);
+            }
+        }
+        true
+    }
+
     fn warning_expired(&self, now: u64) -> bool {
         if self.warning_ttl_ms == 0 {
             return false;
@@ -1063,6 +1133,8 @@ impl ChainState {
             slots,
             slot_format: self.slot_format,
             now_ms: now,
+            shout_sync: self.shout_sync(&view),
+            heard_start: self.heard_start(&view),
         }
     }
 
@@ -1431,6 +1503,99 @@ impl ChainState {
         }
     }
 
+    fn all_clock_keys(&self) -> Vec<TankKey> {
+        let mut keys = vec![TankKey::Main];
+        keys.extend(
+            self.tanks
+                .iter()
+                .map(|tank| TankKey::Named(tank.name.clone())),
+        );
+        keys
+    }
+
+    fn last_activity_ms(&self, key: &TankKey) -> Option<u64> {
+        let mut last = self.clock_started(key);
+        for slot in self.slots.values() {
+            if self.tank_key_for(slot.number) != *key {
+                continue;
+            }
+            for at in [slot.last_shout_ms, slot.last_actual_ms] {
+                last = match (last, at) {
+                    (Some(a), Some(b)) => Some(a.max(b)),
+                    (None, other) | (other, None) => other,
+                };
+            }
+        }
+        last
+    }
+
+    fn idle_limit_ms(&self, key: &TankKey) -> u64 {
+        let interval = interval_ms(self.interval_for(key));
+        if self.shout_sync(key) && !self.heard_start(key) {
+            // Auto-started from shout gaps: two missed beats plus the slack
+            // used to decide those gaps looked timed.
+            return interval.saturating_mul(2) + 2_000;
+        }
+        let n = self.rotation_for(key).len().max(1) as u64;
+        let cycle = interval.saturating_mul(n);
+        let cast = interval_ms(self.cast_time_seconds);
+        cycle.max(cast).saturating_add(interval)
+    }
+
+    fn clock_is_idle(&self, key: &TankKey, now: u64) -> bool {
+        if self.rotation_for(key).is_empty() {
+            return true;
+        }
+        let Some(last) = self.last_activity_ms(key) else {
+            return false;
+        };
+        now.saturating_sub(last) >= self.idle_limit_ms(key)
+    }
+
+    fn stop_idle_clock(&mut self, key: TankKey, now: u64) {
+        let tank = self.display_name(&key);
+        let numbers: Vec<u32> = self
+            .slots
+            .keys()
+            .copied()
+            .filter(|number| self.tank_key_for(*number) == key)
+            .collect();
+        for number in numbers {
+            if let Some(slot) = self.slots.get_mut(&number) {
+                slot.last_shout_ms = None;
+            }
+        }
+        self.set_shout_sync(&key, false);
+        self.set_armed(&key, false);
+        self.set_clock(key.clone(), false, None);
+        self.set_clock_current(key, None);
+        let mut event = ChainEvent::new(
+            ChainEventKind::Stop,
+            now,
+            format!("The chain on {tank} ended"),
+        );
+        event.tank = Some(tank);
+        self.push_event(event);
+    }
+
+    /// Stops clocks that have gone quiet so an inferred chain cannot run forever.
+    pub fn finish_idle_at(&mut self, now: u64) -> bool {
+        self.clear_stale_warning_at(now);
+        let keys = self.all_clock_keys();
+        let mut changed = false;
+        for key in keys {
+            if !self.clock_running(&key) {
+                continue;
+            }
+            if !self.clock_is_idle(&key, now) {
+                continue;
+            }
+            self.stop_idle_clock(key, now);
+            changed = true;
+        }
+        changed
+    }
+
     fn rotation_for(&self, key: &TankKey) -> Vec<u32> {
         self.slots
             .keys()
@@ -1516,6 +1681,8 @@ impl ChainState {
                 next_number: next,
                 beat_tick: beat.as_ref().map(|b| b.ticks),
                 is_you: you.as_ref() == Some(&key),
+                shout_sync: self.shout_sync(&key),
+                heard_start: self.heard_start(&key),
             });
         }
         out
@@ -2438,6 +2605,77 @@ mod tests {
         assert_eq!(snap.next_number, Some(1));
         let eta = snap.you_cast_in.expect("you are next");
         assert!((eta - 1.9).abs() < 0.2);
+    }
+
+    #[test]
+    fn inferred_clock_stops_after_the_shouts_go_quiet() {
+        let mut chain = filled();
+        chain.apply_heal_at(call("Two", 2, false), 10_000);
+        chain.apply_heal_at(call("Three", 3, false), 12_100);
+        assert!(chain.running);
+        assert!(chain.snapshot_at(12_100).shout_sync);
+        assert!(!chain.snapshot_at(12_100).heard_start);
+        // Two missed beats on a 2s chain is 6s, plus 2s slack.
+        assert!(!chain.finish_idle_at(18_000));
+        assert!(chain.running);
+        assert!(chain.finish_idle_at(20_200));
+        assert!(!chain.running);
+        let events = chain.take_events();
+        assert!(
+            events
+                .iter()
+                .any(|event| event.kind == ChainEventKind::Stop
+                    && event.text.contains("ended"))
+        );
+        // A stray CH after the pull cannot rebuild the old shout gaps.
+        chain.apply_heal_at(call("Two", 2, false), 30_000);
+        assert!(!chain.running);
+        chain.apply_heal_at(call("Three", 3, false), 32_100);
+        assert!(chain.running);
+    }
+
+    #[test]
+    fn commanded_clock_keeps_running_through_a_slow_beat() {
+        let mut chain = filled();
+        chain.apply_command_at(
+            ChainCommand::StartChain { tank: None },
+            "Lead".into(),
+            10_000,
+        );
+        chain.apply_heal_at(call("Clericone", 1, true), 10_000);
+        assert!(chain.running);
+        // Auto-start would have stopped by now; a called chain waits a
+        // full rotation (or a CH) plus one beat.
+        assert!(!chain.finish_idle_at(16_000));
+        assert!(chain.running);
+        assert!(chain.finish_idle_at(22_000));
+        assert!(!chain.running);
+    }
+
+    #[test]
+    fn drop_player_releases_their_seat_and_keeps_the_beat() {
+        let mut chain = filled();
+        chain.apply_command_at(
+            ChainCommand::StartChain { tank: None },
+            "Lead".into(),
+            10_000,
+        );
+        chain.apply_heal_at(call("Clericone", 1, true), 10_000);
+        assert!(chain.drop_player_at("Two", 11_000));
+        assert!(chain.slots.get(&2).is_none());
+        assert!(chain.running);
+        assert_eq!(chain.rotation_for(&TankKey::Main).len(), 2);
+        assert!(!chain.drop_player_at("Two", 11_000));
+    }
+
+    #[test]
+    fn a_quiet_seat_is_yielded_after_they_leave_for_the_other_chain() {
+        let mut chain = filled();
+        // !take never shouted: they moved as soon as they cast elsewhere.
+        assert!(chain.should_yield_player("Two", 10_000));
+        chain.apply_heal_at(call("Two", 2, false), 10_000);
+        assert!(!chain.should_yield_player("Two", 12_000));
+        assert!(chain.should_yield_player("Two", 16_000));
     }
 
     #[test]

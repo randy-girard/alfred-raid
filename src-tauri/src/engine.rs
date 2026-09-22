@@ -17,11 +17,23 @@ pub fn apply_lines(
     for line in lines {
         match parser.parse_line(line, your_name.as_deref()) {
             ParseResult::CompleteHeal(call) => {
+                let speaker = call.speaker.clone();
+                let now = now_ms();
+                let yield_rampage = rampage.should_yield_player(&speaker, now);
                 chain.apply_heal(call);
+                if chain.has_player(&speaker) && yield_rampage {
+                    rampage.drop_player_at(&speaker, now);
+                }
                 changed = true;
             }
             ParseResult::RampageHeal(call) => {
+                let speaker = call.speaker.clone();
+                let now = now_ms();
+                let yield_chain = chain.should_yield_player(&speaker, now);
                 rampage.apply_heal(call);
+                if rampage.has_player(&speaker) && yield_chain {
+                    chain.drop_player_at(&speaker, now);
+                }
                 changed = true;
             }
             ParseResult::Command(cmd, speaker, _, kind) => {
@@ -47,7 +59,17 @@ pub fn apply_lines(
             ParseResult::Ignored => {}
         }
     }
+    let now = now_ms();
+    changed |= chain.finish_idle_at(now);
+    changed |= rampage.finish_idle_at(now);
     changed
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 fn apply_command(
@@ -574,6 +596,52 @@ mod tests {
             rampage.snapshot().slot_format,
             crate::chain::SlotFormat::Letter
         );
+    }
+
+    #[test]
+    fn a_cleric_who_moves_from_rampage_to_ch_is_pulled_off_rampage() {
+        let parser = Parser::new();
+        let mut chain = ChainState::new(2.0, 10.0);
+        let mut rampage = ChainState::new_rampage(2.0, 10.0);
+        rampage.apply_heal_at(
+            crate::parser::CompleteHealCall {
+                speaker: "CCC".into(),
+                is_you: false,
+                number: 3,
+                target: "Grendel".into(),
+                tag: Some("GG".into()),
+                raw: "GG CCC RCH -- Grendel".into(),
+            },
+            10_000,
+        );
+        chain.apply_heal_at(
+            crate::parser::CompleteHealCall {
+                speaker: "CCC".into(),
+                is_you: false,
+                number: 5,
+                target: "Mluian".into(),
+                tag: Some("GG".into()),
+                raw: "GG 005 CH -- Mluian".into(),
+            },
+            16_000,
+        );
+        assert!(rampage.should_yield_player("CCC", 16_000));
+        rampage.drop_player_at("CCC", 16_000);
+        assert_eq!(chain.slots.get(&5).unwrap().player, "CCC");
+        assert!(rampage.slots.get(&3).is_none());
+        // Sitting down on both in the same breath still keeps both seats.
+        apply_lines(
+            &parser,
+            &mut chain,
+            &mut rampage,
+            Some("Clericone"),
+            &[
+                ts("Two shouts, 'GG 002 CH -- Mluian'"),
+                ts("Two shouts, 'GG BBB RCH -- Grendel'"),
+            ],
+        );
+        assert_eq!(chain.slots.get(&2).unwrap().player, "Two");
+        assert_eq!(rampage.slots.get(&2).unwrap().player, "Two");
     }
 
     #[test]

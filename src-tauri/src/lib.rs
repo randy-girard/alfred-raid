@@ -113,11 +113,32 @@ fn get_config_path() -> String {
 }
 
 #[tauri::command]
-fn get_snapshot(state: State<AppState>) -> RaidSnapshot {
-    RaidSnapshot {
-        chain: state.chain.lock().expect("chain").snapshot(),
-        rampage: state.rampage.lock().expect("rampage").snapshot(),
+fn get_snapshot(state: State<AppState>, app: AppHandle) -> RaidSnapshot {
+    tick_idle_clocks(&app, state.inner())
+}
+
+fn tick_idle_clocks(app: &AppHandle, state: &AppState) -> RaidSnapshot {
+    let now = now_ms();
+    let (Ok(mut chain), Ok(mut rampage)) = (state.chain.lock(), state.rampage.lock()) else {
+        return RaidSnapshot {
+            chain: ChainState::new(2.0, 10.0).snapshot(),
+            rampage: ChainState::new_rampage(2.0, 10.0).snapshot(),
+        };
+    };
+    let changed = chain.finish_idle_at(now) | rampage.finish_idle_at(now);
+    let snap = RaidSnapshot {
+        chain: chain.snapshot(),
+        rampage: rampage.snapshot(),
+    };
+    if changed {
+        let chain_events = chain.take_events();
+        let rampage_events = rampage.take_events();
+        drop(chain);
+        drop(rampage);
+        let _ = app.emit("raid-updated", &snap);
+        record_events(app, state, chain_events, rampage_events);
     }
+    snap
 }
 
 #[tauri::command]

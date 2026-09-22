@@ -34,6 +34,7 @@ import {
   eqDirStatusText,
   chainKindLabel,
   chainRail,
+  CHAIN_FOCUS_KEY,
   primaryChain,
   sideChainsHtml,
   slotClassName,
@@ -53,6 +54,7 @@ import {
   sessionSummaryHtml,
   CHAIN_COMMANDS,
   RAMPAGE_COMMANDS,
+  type ChainFocus,
   type ChainSnapshot,
   type EqDirectoryProbe,
   type SessionReport,
@@ -106,6 +108,7 @@ type AppConfig = {
 };
 
 let raid: RaidSnapshot | null = null;
+let focusedKind: ChainFocus | null = readChainFocus();
 let currentView: View = "chain";
 let config: AppConfig | null = null;
 let watch: WatchStatus | null = null;
@@ -250,16 +253,38 @@ function goSetup(delta: number) {
   renderSetup();
 }
 
+function readChainFocus(): ChainFocus | null {
+  try {
+    const value = localStorage.getItem(CHAIN_FOCUS_KEY);
+    if (value === "chain" || value === "rampage") return value;
+  } catch {
+    /* private mode */
+  }
+  return null;
+}
+
+function writeChainFocus(kind: ChainFocus | null) {
+  focusedKind = kind;
+  try {
+    if (kind) localStorage.setItem(CHAIN_FOCUS_KEY, kind);
+    else localStorage.removeItem(CHAIN_FOCUS_KEY);
+  } catch {
+    /* private mode */
+  }
+}
+
 function renderChain() {
   const now = Date.now();
   const chain = tickSnapshot(raid?.chain ?? null, now);
   const rampage = tickSnapshot(raid?.rampage ?? null, now);
-  // One list, one banner: the chain you are on leads, the rest go to the side.
-  const primary = primaryChain(chain, rampage);
-  const other = primary.kind === "chain" ? rampage : chain;
+  // Clicking the side column pins that chain in the big list; sound still
+  // follows the chain you are actually on.
+  const visual = primaryChain(chain, rampage, focusedKind);
+  const audio = primaryChain(chain, rampage);
+  const other = visual.kind === "chain" ? rampage : chain;
   renderPanel(
-    primary.live,
-    chainRail(primary.live, other),
+    visual.live,
+    chainRail(visual.live, other),
     {
       tank: "tank-name",
       interval: "interval",
@@ -275,7 +300,8 @@ function renderChain() {
       offset: "you-offset",
       progress: "you-progress",
     },
-    primary.kind,
+    visual.kind,
+    audio,
   );
   renderAlerts();
 }
@@ -285,6 +311,7 @@ function renderPanel(
   rail: SideChain[],
   ids: PanelIds,
   kind: "chain" | "rampage",
+  audio: { live: ChainSnapshot | null; kind: "chain" | "rampage" } = { live, kind },
 ) {
   const empty = $(ids.empty);
   const slotsEl = $(ids.slots);
@@ -308,13 +335,14 @@ function renderPanel(
           .map((tank) => `${tank.name} ${tankClockLabel(tank)}`)
           .join(" · ")
       : chainStateLabel({ running: live?.running ?? false, armed: live?.armed });
-  $(ids.youName).textContent = live?.yourName || watch?.character || "—";
+  $(ids.youName).textContent = live?.yourName || audio.live?.yourName || watch?.character || "—";
+  const youLive = yourSlotNumber(live) != null ? live : audio.live;
   const yourSlot = $(ids.youSlot);
-  const number = yourSlotNumber(live);
-  yourSlot.textContent = yourSlotLabel(live);
+  const number = yourSlotNumber(youLive);
+  yourSlot.textContent = yourSlotLabel(youLive);
   yourSlot.parentElement?.classList.toggle("has-slot", number != null);
   $(ids.youSlotBadge).textContent =
-    number != null && live ? formatSlot(number, live.slotFormat) : "";
+    number != null && youLive ? formatSlot(number, youLive.slotFormat) : "";
 
   const side = sideChainsHtml(rail);
   if (!live || live.slots.length === 0) {
@@ -380,25 +408,25 @@ function renderPanel(
     sideEl.hidden = side === "";
   }
 
-  const eta = live?.running ? live.youCastIn : live?.youAreNextIn;
+  const eta = youLive?.running ? youLive.youCastIn : youLive?.youAreNextIn;
   if (
     shouldShowYouBanner({
-      running: live?.running ?? false,
-      youCastIn: live?.youCastIn,
-      youAreNextIn: live?.youAreNextIn,
+      running: youLive?.running ?? false,
+      youCastIn: youLive?.youCastIn,
+      youAreNextIn: youLive?.youAreNextIn,
     })
   ) {
     banner.hidden = false;
     $(ids.eta).textContent = (eta ?? 0).toFixed(1);
     const offsetEl = $(ids.offset);
-    offsetEl.textContent = live?.youLastOffset != null ? ` · ${formatOffset(live.youLastOffset)}` : "";
-    const width = Math.round(youCastProgress(live) * 1000) / 10;
+    offsetEl.textContent = youLive?.youLastOffset != null ? ` · ${formatOffset(youLive.youLastOffset)}` : "";
+    const width = Math.round(youCastProgress(youLive) * 1000) / 10;
     $(ids.progress).style.width = `${width}%`;
-    if (audible && eta != null) maybeChime(eta, kind);
+    if (audible && eta != null) maybeChime(eta, audio.kind);
   } else {
     banner.hidden = true;
   }
-  if (audible) maybeMetronome(live, kind);
+  if (audible) maybeMetronome(audio.live, audio.kind);
 }
 
 function renderAlerts() {
@@ -1163,6 +1191,21 @@ window.addEventListener("DOMContentLoaded", () => {
     renderChain();
   });
 
+  const swapToSideChain = (event: Event) => {
+    const target = event.target as HTMLElement | null;
+    const el = target?.closest<HTMLElement>(".side-chain");
+    const kind = el?.dataset.kind;
+    if (kind !== "chain" && kind !== "rampage") return;
+    event.preventDefault();
+    writeChainFocus(kind);
+    renderChain();
+  };
+  $("side-chains").addEventListener("click", swapToSideChain);
+  $("side-chains").addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    swapToSideChain(event);
+  });
+
   void (async () => {
     await loadInitial();
     await listen<RaidSnapshot>("raid-updated", (event) => {
@@ -1194,4 +1237,14 @@ window.addEventListener("DOMContentLoaded", () => {
     requestAnimationFrame(tick);
   };
   requestAnimationFrame(tick);
+  window.setInterval(() => {
+    if (!raid?.chain.running && !raid?.rampage.running) return;
+    void invoke<RaidSnapshot>("get_snapshot")
+      .then((snap) => {
+        raid = snap;
+      })
+      .catch(() => {
+        /* watcher may not be up yet */
+      });
+  }, 1000);
 });

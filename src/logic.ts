@@ -28,6 +28,8 @@ export type TankSnapshot = {
   nextNumber: number | null;
   beatTick: number | null;
   isYou: boolean;
+  shoutSync?: boolean;
+  heardStart?: boolean;
 };
 
 export type WarningKind =
@@ -62,6 +64,8 @@ export type ChainSnapshot = {
   slots: SlotSnapshot[];
   slotFormat: "number" | "letter";
   nowMs: number;
+  shoutSync?: boolean;
+  heardStart?: boolean;
 };
 
 export type WatchStatus = {
@@ -460,6 +464,8 @@ export type SideChain = {
   tank: string;
   /// "CH" or "RCH", so a rampage rotation is never mistaken for a cleric one.
   kind: string;
+  /// Which snapshot this panel came from, so a click can swap the big list.
+  source: "chain" | "rampage";
   format: "number" | "letter";
   intervalSeconds: number;
   state: string;
@@ -498,6 +504,7 @@ export function sideChains(
       return {
         tank: name,
         kind: chainKindLabel(live),
+        source: live.slotFormat === "letter" ? "rampage" : "chain",
         format: live.slotFormat,
         intervalSeconds: tank?.intervalSeconds ?? live.intervalSeconds,
         state: chainStateLabel({ running: tank?.running ?? false, armed: tank?.armed }),
@@ -508,12 +515,24 @@ export function sideChains(
     .filter((side) => side.clerics.length > 0);
 }
 
+export const CHAIN_FOCUS_KEY = "alfred-chain-focus";
+
+export type ChainFocus = "chain" | "rampage";
+
 /// The chain you are on, which is the one that gets the big list. If you are
-/// not on either, whichever has clerics on it wins, cleric chain first.
+/// not on either, whichever has clerics on it wins, cleric chain first. A
+/// click on the side column can pin the other chain in front.
 export function primaryChain(
   chain: ChainSnapshot | null,
   rampage: ChainSnapshot | null,
-): { live: ChainSnapshot | null; kind: "chain" | "rampage" } {
+  focus: ChainFocus | null = null,
+): { live: ChainSnapshot | null; kind: ChainFocus } {
+  if (focus === "rampage" && (rampage?.slots.length ?? 0) > 0) {
+    return { live: rampage, kind: "rampage" };
+  }
+  if (focus === "chain" && (chain?.slots.length ?? 0) > 0) {
+    return { live: chain, kind: "chain" };
+  }
   const onChain = yourSlotNumber(chain) != null;
   const onRampage = yourSlotNumber(rampage) != null;
   if (onRampage && !onChain) return { live: rampage, kind: "rampage" };
@@ -552,7 +571,7 @@ export function sideChainsHtml(sides: SideChain[]): string {
         })
         .join("");
       const waiting = side.waiting > 0 ? `<small class="side-more">+${side.waiting} more</small>` : "";
-      return `<section class="side-chain">
+      return `<section class="side-chain" data-kind="${side.source}" role="button" tabindex="0" title="Show this chain">
       <header>
         <strong>${escapeHtml(side.tank)}</strong>
         <small>${escapeHtml(side.kind)} · ${escapeHtml(side.state)} · ${side.intervalSeconds.toFixed(1)}s</small>
@@ -1175,7 +1194,7 @@ function applyAllTanks(snapshot: ChainSnapshot, now: number): ChainSnapshot {
   for (const [name, group] of groups) {
     const tank = snapshot.tanks.find((item) => item.name === name);
     let scheduled = group;
-    if (tank?.running && tank.startedAtMs != null) {
+    if (tank?.running && tank.startedAtMs != null && !clockIsIdle(snapshot, now, tank)) {
       scheduled = scheduleSlots(
         group,
         tank.startedAtMs,
@@ -1222,9 +1241,66 @@ function applyAllTanks(snapshot: ChainSnapshot, now: number): ChainSnapshot {
     youAreNextIn: you?.isNext ? youCastIn : null,
     nowMs: now,
     running: snapshot.yourTank
-      ? (yourClock?.running ?? snapshot.running)
-      : snapshot.tanks.some((tank) => tank.running),
+      ? clockIsIdle(snapshot, now, yourClock)
+        ? false
+        : (yourClock?.running ?? snapshot.running)
+      : snapshot.tanks.some((tank) => tank.running && !clockIsIdle(snapshot, now, tank)),
   };
+}
+
+export function lastActivityMs(
+  snapshot: ChainSnapshot,
+  tankName?: string | null,
+): number | null {
+  let slots = tankName
+    ? snapshot.slots.filter((slot) => (slot.tank || "") === tankName)
+    : snapshot.slots;
+  let last: number | null = tankName
+    ? snapshot.tanks.find((tank) => tank.name === tankName)?.startedAtMs ?? null
+    : snapshot.startedAtMs;
+  for (const slot of slots) {
+    for (const at of [slot.lastShoutMs, slot.lastCastMs]) {
+      if (at == null) continue;
+      last = last == null ? at : Math.max(last, at);
+    }
+  }
+  return last;
+}
+
+export function idleLimitMs(
+  snapshot: ChainSnapshot,
+  tank?: TankSnapshot | null,
+): number {
+  const intervalSeconds = tank?.intervalSeconds ?? snapshot.intervalSeconds;
+  const interval = Math.max(1, Math.round(intervalSeconds * 1000));
+  const shoutSync = tank?.shoutSync ?? snapshot.shoutSync ?? false;
+  const heardStart = tank?.heardStart ?? snapshot.heardStart ?? false;
+  if (shoutSync && !heardStart) {
+    return interval * 2 + 2_000;
+  }
+  const slots = tank
+    ? snapshot.slots.filter((slot) => (slot.tank || "") === tank.name)
+    : snapshot.slots;
+  const n = Math.max(1, slots.filter((slot) => !slot.skipped).length);
+  const cycle = interval * n;
+  const cast = Math.max(1, Math.round(snapshot.castTimeSeconds * 1000));
+  return Math.max(cycle, cast) + interval;
+}
+
+export function clockIsIdle(
+  snapshot: ChainSnapshot,
+  now: number,
+  tank?: TankSnapshot | null,
+): boolean {
+  const running = tank ? tank.running : snapshot.running;
+  if (!running) return false;
+  const slots = tank
+    ? snapshot.slots.filter((slot) => (slot.tank || "") === tank.name)
+    : snapshot.slots;
+  if (slots.filter((slot) => !slot.skipped).length === 0) return true;
+  const last = lastActivityMs(snapshot, tank?.name);
+  if (last == null) return false;
+  return now - last >= idleLimitMs(snapshot, tank);
 }
 
 export function liveSnapshot(
@@ -1239,9 +1315,14 @@ export function liveSnapshot(
     (!snapshot.yourTank && (snapshot.tanks?.length ?? 0) > 1);
   const live = splitView
     ? applyAllTanks(snapshot, now)
-    : snapshot.running && snapshot.startedAtMs != null
+    : snapshot.running && snapshot.startedAtMs != null && !clockIsIdle(snapshot, now)
       ? applySchedule(snapshot, now)
-      : idleSnapshot(snapshot, now);
+      : idleSnapshot(
+          snapshot.running && clockIsIdle(snapshot, now)
+            ? { ...snapshot, running: false }
+            : snapshot,
+          now,
+        );
   return {
     ...live,
     slots: live.slots.map((slot) => applyCastTiming(slot, live.castTimeSeconds, now)),

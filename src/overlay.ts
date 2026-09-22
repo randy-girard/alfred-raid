@@ -6,7 +6,9 @@ import {
   clampOverlayOpacity,
   liveSnapshot,
   overlayPanelHtml,
+  CHAIN_FOCUS_KEY,
   primaryChain,
+  type ChainFocus,
   type ChainSnapshot,
 } from "./logic";
 
@@ -41,15 +43,24 @@ function applyChrome() {
     : "Drag anywhere to move · resize from the edge";
 }
 
+function readChainFocus(): ChainFocus | null {
+  try {
+    const value = localStorage.getItem(CHAIN_FOCUS_KEY);
+    if (value === "chain" || value === "rampage") return value;
+  } catch {
+    /* private mode */
+  }
+  return null;
+}
+
 function render() {
   const now = Date.now();
   const chain = liveSnapshot(raid?.chain ?? null, now);
   const rampage = liveSnapshot(raid?.rampage ?? null, now);
-  // The chain you are on goes on top.
   const ch = overlayPanelHtml(chain, "CH");
   const rch = overlayPanelHtml(rampage, "Rampage");
   $("overlay-chains").innerHTML =
-    primaryChain(chain, rampage).kind === "rampage" ? rch + ch : ch + rch;
+    primaryChain(chain, rampage, readChainFocus()).kind === "rampage" ? rch + ch : ch + rch;
 }
 
 window.addEventListener("DOMContentLoaded", () => {

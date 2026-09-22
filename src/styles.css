@@ -328,10 +328,17 @@ button {
   border-radius: 10px;
   padding: 6px 8px 8px;
   opacity: 0.72;
+  cursor: pointer;
 }
 
 .side-chain:hover {
   opacity: 1;
+}
+
+.side-chain:focus-visible {
+  opacity: 1;
+  outline: 2px solid var(--gold, #d4b562);
+  outline-offset: 1px;
 }
 
 .side-chain header {
