@@ -504,7 +504,7 @@ export function sideChains(
       return {
         tank: name,
         kind: chainKindLabel(live),
-        source: live.slotFormat === "letter" ? "rampage" : "chain",
+        source: live.slotFormat === "letter" ? ("rampage" as const) : ("chain" as const),
         format: live.slotFormat,
         intervalSeconds: tank?.intervalSeconds ?? live.intervalSeconds,
         state: chainStateLabel({ running: tank?.running ?? false, armed: tank?.armed }),
