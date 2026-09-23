@@ -85,6 +85,7 @@ jobs:
           else
             git commit -m "chore(release): ${{ steps.plan.outputs.version }}"
           fi
+          git pull --rebase origin "${{ github.ref_name }}"
           git tag "${{ steps.plan.outputs.tag }}"
           git push origin HEAD:${{ github.ref_name }}
           git push origin "${{ steps.plan.outputs.tag }}"
