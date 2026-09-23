@@ -55,7 +55,7 @@ Release artifacts from `make build` land in `src-tauri/target/release/bundle/` (
 
 Logging must be on in game (`/log`).
 
-Alfred scans quoted chat from any channel, including **say**. CH macros and `!` commands both work.
+CH and RCH macros are read from quoted chat on **any** channel, including shout and say. `!` commands are **guild chat only**: `You tell the guild, '!take 001'` or `Leadcleric tells the guild, '!startchain'`.
 
 ### Cleric shouts
 
@@ -93,6 +93,8 @@ You shout, 'GG RCH AAA -- Beefwich'
 If you are on the rampage chain and not on a CH number, rampage takes the big list and the CH rotations move to the side column. Sound, metronome, and claim alerts follow the chain in the big list, so the two clocks never talk over each other.
 
 ### Chain commands
+
+Type these in **guild chat** (`/gu`). Shout, raid, group, and say are ignored.
 
 | Command | Effect |
 | --- | --- |

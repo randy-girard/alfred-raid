@@ -121,8 +121,11 @@ impl Parser {
         let Some(chat) = parse_chat_line(line, your_name) else {
             return ParseResult::Ignored;
         };
-        if let Some((cmd, kind)) = parse_chain_command(&chat.message) {
-            return ParseResult::Command(cmd, chat.speaker, chat.is_you, kind);
+        // ! commands only from guild: "You tell the guild," / "Name tells the guild,".
+        if chat.channel == Channel::Guild {
+            if let Some((cmd, kind)) = parse_chain_command(&chat.message) {
+                return ParseResult::Command(cmd, chat.speaker, chat.is_you, kind);
+            }
         }
         if let Some(call) = self.parse_rch_message(&chat.message, &chat.speaker, chat.is_you) {
             return ParseResult::RampageHeal(call);
@@ -835,24 +838,11 @@ mod tests {
         assert_eq!(call.speaker, "Hanbox");
         assert!(matches!(
             line("[Fri Sep 18 16:27:00 2026] You say, '!startchain'"),
-            ParseResult::Command(
-                ChainCommand::StartChain { tank: None },
-                _,
-                true,
-                ChainKind::Both
-            )
+            ParseResult::Ignored
         ));
         assert!(matches!(
             line("[Fri Sep 18 16:27:00 2026] Two tells you, '!take 002'"),
-            ParseResult::Command(
-                ChainCommand::Take {
-                    number: 2,
-                    player: None
-                },
-                _,
-                false,
-                ChainKind::Cleric
-            )
+            ParseResult::Ignored
         ));
     }
 
@@ -1000,46 +990,47 @@ mod tests {
     }
 
     #[test]
-    fn commands_from_group_ooc_and_auction() {
+    fn commands_only_from_guild_chat() {
+        for sample in [
+            "Leadcleric tells the group, '!startchain'",
+            "You say out of character, '!stopchain'",
+            "Leadcleric auctions, '!skip 001'",
+            "You shout, '!skip'",
+            "Two tells the group, '!back'",
+            "You shout, '!start-chain'",
+            "Leadcleric tells the raid, '!start'",
+            "You tell your raid, '!stop'",
+            "Two tells the raid, '!start chain'",
+            "You say to the raid, '!stop chain'",
+            "You say, '!take 001'",
+            "Two tells you, '!take 002'",
+        ] {
+            let line = format!("[Fri Sep 18 16:27:00 2026] {sample}");
+            assert!(
+                matches!(
+                    parser().parse_line(&line, Some("Clericone")),
+                    ParseResult::Ignored
+                ),
+                "command should be ignored on {sample}"
+            );
+        }
         assert!(matches!(
-            line("[Fri Sep 18 16:27:00 2026] Leadcleric tells the group, '!startchain'"),
-            ParseResult::Command(ChainCommand::StartChain { .. }, ..)
+            line("[Fri Sep 18 16:27:00 2026] Leadcleric tells the guild, '!startchain'"),
+            ParseResult::Command(
+                ChainCommand::StartChain { tank: None },
+                _,
+                false,
+                ChainKind::Both
+            )
         ));
         assert!(matches!(
-            line("[Fri Sep 18 16:27:00 2026] You say out of character, '!stopchain'"),
-            ParseResult::Command(ChainCommand::EndChain { .. }, ..)
-        ));
-        assert!(matches!(
-            line("[Fri Sep 18 16:27:00 2026] Leadcleric auctions, '!skip 001'"),
-            ParseResult::Command(ChainCommand::Skip { number: Some(1) }, ..)
-        ));
-        assert!(matches!(
-            line("[Fri Sep 18 16:27:00 2026] You shout, '!skip'"),
-            ParseResult::Command(ChainCommand::Skip { number: None }, ..)
-        ));
-        assert!(matches!(
-            line("[Fri Sep 18 16:27:00 2026] Two tells the group, '!back'"),
-            ParseResult::Command(ChainCommand::Back { number: None }, ..)
-        ));
-        assert!(matches!(
-            line("[Fri Sep 18 16:27:00 2026] You shout, '!start-chain'"),
-            ParseResult::Command(ChainCommand::StartChain { .. }, ..)
-        ));
-        assert!(matches!(
-            line("[Fri Sep 18 16:27:00 2026] Leadcleric tells the raid, '!start'"),
-            ParseResult::Command(ChainCommand::StartChain { .. }, ..)
-        ));
-        assert!(matches!(
-            line("[Fri Sep 18 16:27:00 2026] You tell your raid, '!stop'"),
-            ParseResult::Command(ChainCommand::EndChain { .. }, ..)
-        ));
-        assert!(matches!(
-            line("[Fri Sep 18 16:27:00 2026] Two tells the raid, '!start chain'"),
-            ParseResult::Command(ChainCommand::StartChain { .. }, ..)
-        ));
-        assert!(matches!(
-            line("[Fri Sep 18 16:27:00 2026] You say to the raid, '!stop chain'"),
-            ParseResult::Command(ChainCommand::EndChain { .. }, ..)
+            line("[Fri Sep 18 16:27:00 2026] You tell the guild, '!stopchain'"),
+            ParseResult::Command(
+                ChainCommand::EndChain { tank: None },
+                _,
+                true,
+                ChainKind::Both
+            )
         ));
     }
 
@@ -1448,7 +1439,7 @@ mod tests {
 
     #[test]
     fn format_test_log_line_parses_like_a_real_log() {
-        let you_take = format_test_log_line("YOU", TestChannel::Shout, "!take 001").unwrap();
+        let you_take = format_test_log_line("YOU", TestChannel::Guild, "!take 001").unwrap();
         assert!(matches!(
             parser().parse_line(&you_take, Some("Portlia")),
             ParseResult::Command(
@@ -1460,6 +1451,11 @@ mod tests {
                 true,
                 ChainKind::Cleric
             )
+        ));
+        let shouted_command = format_test_log_line("YOU", TestChannel::Shout, "!take 001").unwrap();
+        assert!(matches!(
+            parser().parse_line(&shouted_command, Some("Portlia")),
+            ParseResult::Ignored
         ));
         let named =
             format_test_log_line("Hanbox", TestChannel::Guild, "GG 001 CH -- Beefwich").unwrap();
@@ -1473,7 +1469,6 @@ mod tests {
             TestChannel::Shout,
             TestChannel::Ooc,
             TestChannel::Group,
-            TestChannel::Guild,
             TestChannel::Auction,
             TestChannel::Raid,
             TestChannel::Say,
@@ -1482,11 +1477,16 @@ mod tests {
             assert!(
                 matches!(
                     parser().parse_line(&line, Some("Portlia")),
-                    ParseResult::Command(ChainCommand::Take { number: 2, .. }, _, true, _)
+                    ParseResult::Ignored
                 ),
-                "channel {channel:?} should parse"
+                "channel {channel:?} should ignore commands"
             );
         }
+        let guild_take = format_test_log_line("YOU", TestChannel::Guild, "!take 002").unwrap();
+        assert!(matches!(
+            parser().parse_line(&guild_take, Some("Portlia")),
+            ParseResult::Command(ChainCommand::Take { number: 2, .. }, _, true, _)
+        ));
     }
 
     #[test]

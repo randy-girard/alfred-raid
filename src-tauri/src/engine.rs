@@ -181,7 +181,7 @@ mod tests {
             &ts("Two tells the guild, '!take 002'"),
             &ts("Three tells the guild, '!take 003'"),
             &ts("You shout, 'GG 001 CH -- Mluian'"),
-            &ts("Leadcleric tells the group, '!skip 002'"),
+            &ts("Leadcleric tells the guild, '!skip 002'"),
         ]);
         assert_eq!(chain.next_after(1), Some(3));
         let parser = Parser::new();
@@ -189,7 +189,7 @@ mod tests {
             &parser,
             &mut chain,
             Some("Clericone"),
-            &[ts("Leadcleric says out of character, '!back 002'")],
+            &[ts("Leadcleric tells the guild, '!back 002'")],
         );
         assert_eq!(chain.next_after(1), Some(2));
     }
@@ -199,7 +199,7 @@ mod tests {
         let mut chain = run(&[
             &ts("You tell the guild, '!take 001'"),
             &ts("Two tells the guild, '!take 002'"),
-            &ts("You shout, '!skip'"),
+            &ts("You tell the guild, '!skip'"),
         ]);
         assert!(chain.skipped.contains(&1));
         assert!(!chain.skipped.contains(&2));
@@ -208,7 +208,7 @@ mod tests {
             &parser,
             &mut chain,
             Some("Clericone"),
-            &[ts("Two tells the group, '!skip'")],
+            &[ts("Two tells the guild, '!skip'")],
         );
         assert!(chain.skipped.contains(&2));
         apply_ch(
@@ -337,7 +337,7 @@ mod tests {
             &parser,
             &mut chain,
             Some("Clericone"),
-            &[ts("Leadcleric tells the raid, '!start'")],
+            &[ts("Leadcleric tells the guild, '!start'")],
         );
         assert!(!chain.running);
         assert!(chain.snapshot().armed);
@@ -352,7 +352,7 @@ mod tests {
             &parser,
             &mut chain,
             Some("Clericone"),
-            &[ts("You tell your raid, '!stop chain'")],
+            &[ts("You tell the guild, '!stop chain'")],
         );
         assert!(!chain.running);
         assert_eq!(chain.slots.len(), 1);
@@ -365,9 +365,9 @@ mod tests {
             &ts("You tell the guild, '!take 001'"),
             &ts("Two tells the guild, '!take 002'"),
             &ts("Three tells the guild, '!take 009'"),
-            &ts("Leadcleric tells the raid, '!ot Beefwich'"),
-            &ts("Leadcleric tells the raid, '!split 9'"),
-            &ts("Leadcleric tells the raid, '!startchain'"),
+            &ts("Leadcleric tells the guild, '!ot Beefwich'"),
+            &ts("Leadcleric tells the guild, '!split 9'"),
+            &ts("Leadcleric tells the guild, '!startchain'"),
         ]);
         assert!(!chain.running);
         assert!(chain.snapshot().armed);
@@ -421,22 +421,32 @@ mod tests {
     }
 
     #[test]
-    fn start_and_end_from_any_channel() {
+    fn start_and_end_from_guild_chat_only() {
         let mut chain = run(&[
             &ts("You tell the guild, '!take 001'"),
             &ts("Two tells the group, '!take 002'"),
             &ts("Leadcleric auctions, '!startchain'"),
         ]);
         assert!(!chain.running);
-        assert!(chain.snapshot().armed);
+        assert!(!chain.snapshot().armed);
+        assert_eq!(chain.slots.get(&1).unwrap().player, "Clericone");
+        assert!(chain.slots.get(&2).is_none());
         let parser = Parser::new();
+        apply_ch(
+            &parser,
+            &mut chain,
+            Some("Clericone"),
+            &[ts("Leadcleric tells the guild, '!startchain'")],
+        );
+        assert!(!chain.running);
+        assert!(chain.snapshot().armed);
         apply_ch(
             &parser,
             &mut chain,
             Some("Clericone"),
             &[ts("You say, '!stopchain'")],
         );
-        assert!(!chain.running);
+        assert!(chain.snapshot().armed);
         apply_ch(
             &parser,
             &mut chain,
@@ -444,9 +454,11 @@ mod tests {
             &[
                 ts("Leadcleric says, '!startchain'"),
                 ts("You say out of character, '!stopchain'"),
+                ts("You tell the guild, '!stopchain'"),
             ],
         );
         assert!(!chain.running);
+        assert!(!chain.snapshot().armed);
     }
 
     #[test]
@@ -498,17 +510,17 @@ mod tests {
         let rampage = run_rampage(&[
             &ts("You shout, 'GG AAA RCH -- Mluian'"),
             &ts("Two shouts, 'GG BBB RCH -- Mluian'"),
-            &ts("Leadcleric tells the raid, '!take CCC'"),
-            &ts("Leadcleric tells the raid, '!startchain'"),
+            &ts("Leadcleric tells the guild, '!take CCC'"),
+            &ts("Leadcleric tells the guild, '!startchain'"),
         ]);
         assert_eq!(rampage.slots.get(&1).unwrap().player, "Clericone");
         assert_eq!(rampage.slots.get(&2).unwrap().player, "Two");
         assert_eq!(rampage.slots.get(&3).unwrap().player, "Leadcleric");
         assert!(!rampage.running);
         assert!(rampage.snapshot().armed);
-        let named = run_rampage(&[&ts("Leadcleric tells the raid, '!rt Mluian'")]);
+        let named = run_rampage(&[&ts("Leadcleric tells the guild, '!rt Mluian'")]);
         assert_eq!(named.tank.as_deref(), Some("Mluian"));
-        let ignored_split = run_rampage(&[&ts("Leadcleric tells the raid, '!rot Beefwich'")]);
+        let ignored_split = run_rampage(&[&ts("Leadcleric tells the guild, '!rot Beefwich'")]);
         assert!(ignored_split.tank.is_none());
         let ch = run(&[
             &ts("You shout, 'GG AAA RCH -- Mluian'"),
@@ -533,7 +545,7 @@ mod tests {
                 ts("You shout, 'GG 001 CH -- Mluian'"),
                 ts("You shout, 'GG AAA RCH -- Mluian'"),
                 ts("Two shouts, 'GG BBB RCH -- Mluian'"),
-                ts("Leadcleric tells the raid, '!startchain'"),
+                ts("Leadcleric tells the guild, '!startchain'"),
             ],
         );
         assert!(!chain.running);
@@ -567,7 +579,7 @@ mod tests {
             &mut chain,
             &mut rampage,
             Some("Clericone"),
-            &[ts("Leadcleric tells the raid, '!stopchain'")],
+            &[ts("Leadcleric tells the guild, '!stopchain'")],
         );
         assert!(!chain.running);
         assert!(!rampage.running);
@@ -658,7 +670,7 @@ mod tests {
                 ts("You shout, 'GG 001 CH -- Mluian'"),
                 ts("You shout, 'GG AAA RCH -- Mluian'"),
                 ts("Two shouts, 'GG BBB RCH -- Mluian'"),
-                ts("You shout, '!skip'"),
+                ts("You tell the guild, '!skip'"),
             ],
         );
         assert!(chain.skipped.contains(&1));
@@ -671,7 +683,7 @@ mod tests {
             &mut chain,
             &mut rampage,
             Some("Clericone"),
-            &[ts("You shout, '!back'")],
+            &[ts("You tell the guild, '!back'")],
         );
         assert!(!chain.skipped.contains(&1));
         assert!(!rampage.skipped.contains(&1));
@@ -680,7 +692,7 @@ mod tests {
             &mut chain,
             &mut rampage,
             Some("Clericone"),
-            &[ts("You shout, '!skip AAA'")],
+            &[ts("You tell the guild, '!skip AAA'")],
         );
         assert!(!chain.skipped.contains(&1));
         assert!(rampage.skipped.contains(&1));
@@ -692,7 +704,7 @@ mod tests {
 
         let parser = Parser::new();
         let mut chain = ChainState::new(2.0, 10.0);
-        let take = format_test_log_line("YOU", TestChannel::Shout, "!take 001").unwrap();
+        let take = format_test_log_line("YOU", TestChannel::Guild, "!take 001").unwrap();
         let heal = format_test_log_line("YOU", TestChannel::Shout, "GG 001 CH -- Mluian").unwrap();
         apply_ch(&parser, &mut chain, Some("Clericone"), &[take, heal]);
         assert_eq!(chain.slots.get(&1).unwrap().player, "Clericone");
