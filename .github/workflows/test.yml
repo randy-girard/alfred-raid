@@ -19,6 +19,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.head_ref || github.ref_name }}
+          fetch-depth: 0
 
       - name: Install Linux dependencies
         run: |
@@ -67,5 +68,7 @@ jobs:
             echo "Coverage summary unchanged"
           else
             git commit -m "chore(coverage): update README summary"
-            git push origin HEAD:${{ github.head_ref || github.ref_name }}
+            branch="${{ github.head_ref || github.ref_name }}"
+            git pull --rebase origin "$branch"
+            git push origin "HEAD:$branch"
           fi
